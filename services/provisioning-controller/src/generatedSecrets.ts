@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { DatabaseHandOver } from './dbHandOver.js';
 import { PermanentStepError } from './errors.js';
 import type { StepRequest } from './executePorts.js';
+import { MEDIA_PLACEHOLDER_NAMES } from './plan.js';
 import type { EntryClaim, StackParameters, TenantEntryInputs } from './tenantEntryHost.js';
 
 /**
@@ -25,13 +26,13 @@ import type { EntryClaim, StackParameters, TenantEntryInputs } from './tenantEnt
 export const DATABASE_PASSWORD_KEY = 'GHOST_DB_PASSWORD';
 /** Keys that are values and not secrets; the base supplies them and nothing else may be typed in. */
 export const LITERAL_KEYS: readonly string[] = ['GHOST_OWNER_EMAIL'];
-/** Keys that stand in for credentials the storage gateway will issue. */
-export const PLACEHOLDER_KEYS: readonly string[] = [
-  'GHOST_S3_ACCESS_KEY_ID',
-  'GHOST_S3_SECRET_ACCESS_KEY',
-];
+/** Keys that stand in for credentials the storage gateway will issue; the plan names the same two. */
+export const PLACEHOLDER_KEYS: readonly string[] = MEDIA_PLACEHOLDER_NAMES;
 /** What marks a generated value as not a real credential. */
 export const PLACEHOLDER_PREFIX = 'placeholder-not-a-credential-';
+
+/** True for a value this generator made as a stand-in, false for anything else. */
+export const isPlaceholder = (value: string): boolean => value.startsWith(PLACEHOLDER_PREFIX);
 
 /** A fresh secret: 32 bytes from the operating system's random source, URL-safe. */
 export const systemRandom = (): string => randomBytes(32).toString('base64url');

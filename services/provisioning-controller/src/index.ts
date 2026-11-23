@@ -1,7 +1,13 @@
 export { planOnboarding } from './planOnboarding.js';
 export { executeOnboarding } from './executeOnboarding.js';
 export { FileStateStore } from './fileStateStore.js';
-export { ENTRY_POINTS, STEP_IDS, digestOf } from './plan.js';
+export {
+  ENTRY_POINTS,
+  MEDIA_PLACEHOLDER_NAMES,
+  NOT_APPLICABLE_REASONS,
+  STEP_IDS,
+  digestOf,
+} from './plan.js';
 export { runCli, EXIT } from './main.js';
 export type { CliIo } from './main.js';
 export { commandHostPorts, HOST_EXIT_PERMANENT } from './commandHost.js';
@@ -31,23 +37,37 @@ export {
   DATABASE_PASSWORD_KEY,
   GeneratedTenantEntryInputs,
   LITERAL_KEYS,
+  isPlaceholder,
   PLACEHOLDER_KEYS,
   PLACEHOLDER_PREFIX,
   systemRandom,
   templateKeys,
 } from './generatedSecrets.js';
 export type { SshEndpoint, SshEntryConfig } from './sshEntryTransport.js';
+export { FileSlotKeys, generateOpenSshPair } from './slotKeys.js';
+export type { OpenSshPair, SlotKeys } from './slotKeys.js';
+export { SlotDeployHost, TENANT_IMAGE, DEPLOY_ACCOUNT } from './slotDeployHost.js';
+export type { DeployTransport } from './slotDeployHost.js';
+export { ControllerHost } from './controllerHost.js';
 export { parseRunConfig, RunConfigError } from './runConfig.js';
 export type { RunConfig } from './runConfig.js';
 export { FileApprovalLedger, FileRegisterReader } from './fileReaders.js';
 export { readTrustedJson, TrustedFileError } from './trustedFile.js';
-export type { EntryPoint, OnboardingPlan, PlannedStep, StepId, StepInputs } from './plan.js';
-export { APPROVAL_SCOPES } from './ports.js';
+export type {
+  EntryPoint,
+  NotApplicableReason,
+  OnboardingPlan,
+  PlannedStep,
+  StepId,
+  StepInputs,
+} from './plan.js';
+export { APPROVAL_SCOPES, MEDIA_MODES } from './ports.js';
 export type {
   ApprovalLedger,
   ApprovalScope,
   PlanPorts,
   RecordedApproval,
+  MediaMode,
   RegisterEntry,
   TenantRegisterReader,
 } from './ports.js';

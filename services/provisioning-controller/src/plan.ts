@@ -32,6 +32,29 @@ export const STEP_IDS = [
 ] as const;
 export type StepId = (typeof STEP_IDS)[number];
 
+/**
+ * Why a step has nothing to do for this tenant. Each is a fact the register states: an empty
+ * hostname list, mail off, s3 media, backups off. A step with one of these is recorded complete as
+ * not applicable, never run and never failed for want of a program.
+ */
+export const NOT_APPLICABLE_REASONS = [
+  'no-hostnames',
+  'mail-off',
+  's3-media',
+  'backups-off',
+] as const;
+export type NotApplicableReason = (typeof NOT_APPLICABLE_REASONS)[number];
+
+/**
+ * The names of the secrets the controller fills with marked placeholder values for an s3 media
+ * tenant (the bucket key pair, as the secrets template names them). Names only: the values are
+ * made by `GeneratedTenantEntryInputs`, the one generator, when the secrets are rendered.
+ */
+export const MEDIA_PLACEHOLDER_NAMES = [
+  'GHOST_S3_ACCESS_KEY_ID',
+  'GHOST_S3_SECRET_ACCESS_KEY',
+] as const;
+
 /** Every input is a register-derived value or a name of a secret; no secret value is ever carried. */
 export type StepInputs = Readonly<Record<string, string | number | readonly string[]>>;
 
@@ -44,6 +67,12 @@ export interface PlannedStep {
   readonly scope: ApprovalScope;
   readonly dependsOn: readonly StepId[];
   readonly inputs: StepInputs;
+  /**
+   * Set when the register makes the step not apply. The reason is also one of the `inputs`, so the
+   * digest changes when a step turns applicable or not and a recorded step is never re-planned
+   * quietly.
+   */
+  readonly notApplicable?: NotApplicableReason;
   /** Hash of the inputs: a recorded step whose digest differs was planned from a changed register. */
   readonly inputDigest: string;
 }
@@ -60,7 +89,16 @@ interface StepSpec {
   readonly scope: ApprovalScope;
   readonly dependsOn: readonly StepId[];
   readonly inputs: (e: RegisterEntry) => StepInputs;
+  /** The register fact that makes this step not apply, or undefined when it does. */
+  readonly notApplicable?: (e: RegisterEntry) => NotApplicableReason | undefined;
+  /** Secret names filled with placeholders when the step is not applicable, named in its inputs. */
+  readonly placeholders?: readonly string[];
 }
+
+const noHostnames = (e: RegisterEntry): NotApplicableReason | undefined =>
+  e.hostnames.length === 0 ? 'no-hostnames' : undefined;
+const s3Media = (e: RegisterEntry): NotApplicableReason | undefined =>
+  e.mediaMode === 's3' ? 's3-media' : undefined;
 
 const slotOf = (e: RegisterEntry): StepInputs => ({
   slot: e.appHostSlot,
@@ -97,6 +135,8 @@ const SPECS: readonly StepSpec[] = [
     scope: 'setup',
     dependsOn: ['confirm-register-assignment'],
     inputs: (e) => ({ bucket: e.mediaBucket, prefix: e.mediaFolder }),
+    notApplicable: s3Media,
+    placeholders: MEDIA_PLACEHOLDER_NAMES,
   },
   {
     // The tenant's own state credential, from the gateway's state instance,
@@ -108,6 +148,7 @@ const SPECS: readonly StepSpec[] = [
     scope: 'setup',
     dependsOn: ['confirm-register-assignment'],
     inputs: (e) => ({ prefix: e.stateFolder }),
+    notApplicable: s3Media,
   },
   {
     id: 'render-host-secrets',
@@ -146,6 +187,7 @@ const SPECS: readonly StepSpec[] = [
     scope: 'setup',
     dependsOn: ['create-app-host-slot'],
     inputs: (e) => ({ slot: e.appHostSlot, hostnames: e.hostnames }),
+    notApplicable: noHostnames,
   },
   {
     id: 'publish-mail-dns',
@@ -153,13 +195,18 @@ const SPECS: readonly StepSpec[] = [
     scope: 'web-address',
     dependsOn: ['create-app-host-slot'],
     inputs: (e) => ({ hostnames: e.hostnames }),
+    notApplicable: (e) => noHostnames(e) ?? (e.mail === false ? 'mail-off' : undefined),
   },
   {
     id: 'first-deploy',
     entryPoint: 'app-host',
     scope: 'first-deploy',
     dependsOn: ['push-first-commit', 'publish-mail-dns'],
-    inputs: slotOf,
+    // The image comes from the register and nowhere else; the adapter refuses a deploy with none.
+    inputs: (e) => ({
+      ...slotOf(e),
+      ...(e.imageDigest !== undefined && { imageDigest: e.imageDigest }),
+    }),
   },
   {
     id: 'create-owner-account',
@@ -178,6 +225,7 @@ const SPECS: readonly StepSpec[] = [
     scope: 'web-address',
     dependsOn: ['create-app-host-slot', 'create-owner-account'],
     inputs: (e) => ({ hostnames: e.hostnames, port: e.appHostPort, slot: e.appHostSlot }),
+    notApplicable: noHostnames,
   },
   {
     id: 'enrol-backups',
@@ -185,6 +233,7 @@ const SPECS: readonly StepSpec[] = [
     scope: 'first-deploy',
     dependsOn: ['first-deploy'],
     inputs: (e) => ({ slot: e.appHostSlot, escrowName: `BACKUP_IDENTITY_${e.appHostSlot}` }),
+    notApplicable: (e) => (e.backups === false ? 'backups-off' : undefined),
   },
 ];
 
@@ -197,7 +246,13 @@ export const digestOf = (inputs: StepInputs): string => {
 
 export function buildSteps(entry: RegisterEntry): PlannedStep[] {
   return SPECS.map((spec, index) => {
-    const inputs = spec.inputs(entry);
+    const reason = spec.notApplicable?.(entry);
+    const inputs: StepInputs = {
+      ...spec.inputs(entry),
+      ...(reason !== undefined && { notApplicable: reason }),
+      ...(reason !== undefined &&
+        spec.placeholders !== undefined && { placeholders: spec.placeholders }),
+    };
     return {
       key: `${entry.tenantId}/${spec.id}`,
       id: spec.id,
@@ -206,6 +261,7 @@ export function buildSteps(entry: RegisterEntry): PlannedStep[] {
       scope: spec.scope,
       dependsOn: spec.dependsOn,
       inputs,
+      ...(reason !== undefined && { notApplicable: reason }),
       inputDigest: digestOf(inputs),
     };
   });
