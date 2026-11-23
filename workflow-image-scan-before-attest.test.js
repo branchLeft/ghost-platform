@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseJobs } from './test-support/publish-job-checks.mjs';
+import { swap } from './test-support/workflow-text.ts';
 
 const ROOT = import.meta.dirname;
 const WORKFLOWS = path.join(ROOT, '.github', 'workflows');
@@ -200,13 +201,6 @@ export function problems(source, { file, image }) {
 }
 
 const hasProblem = (list, expected) => list.some((p) => p.includes(expected));
-
-// Replace text that must be there: a mutation that silently changed nothing
-// would let its case pass without proving anything.
-const swap = (text, from, to) => {
-  assert.ok(text.includes(from), `the real text contains ${JSON.stringify(from)}`);
-  return text.replace(from, to);
-};
 
 for (const [file, image] of Object.entries(PUBLISHERS)) {
   const real = read(file);

@@ -15,6 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripCommentLines } from './test-support/workflow-text.ts';
 
 const WORKFLOWS = path.join(import.meta.dirname, '.github', 'workflows');
 
@@ -41,10 +42,6 @@ const BACKSTOPPED = [
   'sso-adapter-ci',
   'storage-gateway-ci',
 ].map((name) => `${name}.yml`);
-
-export function stripCommentLines(text) {
-  return text.replace(/^[ \t]*#.*$/gm, '');
-}
 
 // Each trigger under the top-level `on:` mapping with its `paths:` list, or
 // null for a trigger with no such list. Any other form of the trigger block

@@ -11,26 +11,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { globToRegex, tagPatterns, uncommented } from './test-support/workflow-text.ts';
 
 const WORKFLOWS = path.join(import.meta.dirname, '.github', 'workflows');
-
-function uncommented(file) {
-  return fs.readFileSync(path.join(WORKFLOWS, file), 'utf-8').replace(/^[ \t]*#.*$/gm, '');
-}
-
-function tagPatterns(text) {
-  const block = text.match(/tags:\n((?:[ \t]+- .*\n)+)/);
-  assert.ok(block, 'workflow has a tags trigger');
-  return [...block[1].matchAll(/- '([^']+)'/g)].map((m) => m[1]);
-}
-
-// GitHub's tag filter is a glob over the whole ref name; the only operator
-// used in these workflows is a `[0-9]+` run. Everything between runs is
-// escaped as a literal, then the runs become a regex.
-function globToRegex(glob) {
-  const literal = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${glob.split('[0-9]+').map(literal).join('[0-9]+')}$`);
-}
 
 // The text of one job: from its `  name:` line to the next job or the end.
 function jobBlock(text, name) {

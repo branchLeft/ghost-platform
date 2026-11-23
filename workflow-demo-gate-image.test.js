@@ -9,6 +9,7 @@ import {
   problems as publishProblems,
   withoutComments,
 } from './test-support/publish-job-checks.mjs';
+import { swap } from './test-support/workflow-text.ts';
 
 // The demo gate's image is a control: the demo edge's forward_auth trusts what
 // this image answers. So the workflow that publishes it must follow the proof,
@@ -35,13 +36,6 @@ const PNPM = 'pnpm@11.17.0';
 // Whole-line comments and trailing ones (a `#` after whitespace) both go, so
 // text inside a comment can never satisfy a check.
 const dockerText = (text) => text.replace(/^\s*#.*$/gm, '').replace(/\s+#.*$/gm, '');
-
-// Replace text that must be there: a mutation that silently changed nothing
-// would let its case pass without proving anything.
-const swap = (text, from, to) => {
-  assert.ok(text.includes(from), `the real text contains ${JSON.stringify(from)}`);
-  return text.replace(from, to);
-};
 
 const hasProblem = (list, expected) => list.some((p) => p.includes(expected));
 

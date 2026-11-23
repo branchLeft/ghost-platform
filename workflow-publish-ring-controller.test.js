@@ -10,28 +10,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { globToRegex, tagPatterns, uncommented } from './test-support/workflow-text.ts';
 
 const ROOT = import.meta.dirname;
-const WORKFLOWS = path.join(ROOT, '.github', 'workflows');
 const PACKAGE_DIR = path.join(ROOT, 'services', 'ring-controller');
-
-function uncommented(file) {
-  return fs.readFileSync(path.join(WORKFLOWS, file), 'utf-8').replace(/^[ \t]*#.*$/gm, '');
-}
-
-function tagPatterns(text) {
-  const block = text.match(/tags:\n((?:[ \t]+- .*\n)+)/);
-  assert.ok(block, 'workflow has a tags trigger');
-  return [...block[1].matchAll(/- '([^']+)'/g)].map((m) => m[1]);
-}
-
-// GitHub's tag filter is a glob over the whole ref name; the only operator
-// used in these workflows is a `[0-9]+` run. Everything between runs is
-// escaped as a literal, backslash included, then the runs become a regex.
-function globToRegex(glob) {
-  const literal = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${glob.split('[0-9]+').map(literal).join('[0-9]+')}$`);
-}
 
 const ring = uncommented('publish-ring-controller.yml');
 const others = {
