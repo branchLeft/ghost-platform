@@ -6,6 +6,11 @@ name: Tenant boot CI
 # image itself. The test is render-core/test/tenant-live-boot.test.ts.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'render-core/**'
+      - '.github/workflows/tenant-boot-ci.yml'
   pull_request:
     paths:
       - 'render-core/**'
@@ -60,5 +65,12 @@ jobs:
       - name: Pull the pinned image by digest
         run: docker pull "$TENANT_BOOT_IMAGE"
 
+      # NO_COLOR keeps the verbose log plain for the gate. The gate fails the
+      # job if the live test was skipped, so a skip cannot pass as green.
       - name: Boot the rendered stack and expect 200 on /
-        run: pnpm exec vitest run test/tenant-live-boot.test.ts
+        env:
+          NO_COLOR: '1'
+        run: |
+          set -o pipefail
+          pnpm exec vitest run --reporter=verbose test/tenant-live-boot.test.ts 2>&1 | tee vitest-boot.log
+          bash scripts/assert-live-boot-ran.sh vitest-boot.log
