@@ -47,6 +47,8 @@ def run_once(
             )
         )
 
-    save_state(paths.controller_state, decision.state)
+    # The collector's file first: a run that stops after this and before the state is saved is
+    # safe to repeat, because the decision is a pure function of the state it read.
     write_published(paths.published_state, published_from(decision))
+    save_state(paths.controller_state, decision.state)
     return decision
