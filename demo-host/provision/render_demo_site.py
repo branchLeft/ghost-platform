@@ -178,7 +178,9 @@ def render_federation_refusal() -> list[str]:
         "\t# A demo never exposes federation (ActivityPub, WebFinger, NodeInfo): every",
         "\t# such path is refused here, before the gate, for every slot.",
         f"\t@federationPaths path {' '.join(FEDERATION_PATHS)}",
-        "\trespond @federationPaths 404",
+        "\thandle @federationPaths {",
+        "\t\trespond 404",
+        "\t}",
     ]
 
 
@@ -210,6 +212,19 @@ def render_slot_body(slot: str, edge: Mapping[str, Any]) -> list[str]:
         f"\t\tmax_size {max_size}",
         "\t}",
         "",
+        "\troute {",
+        *(f"\t{line}" if line else line for line in routing_lines(slot)),
+        "\t}",
+    ]
+
+
+def routing_lines(slot: str) -> list[str]:
+    """The slot's routing, in the order Caddy must run it, one tab deep. One
+    `route` block keeps the written order: Caddy otherwise runs a directive
+    by its own order, so a `respond` written before the catch-all can sit
+    behind it (the reviewed 502). The federation refusal and the gate's own
+    route come before the catch-all."""
+    return [
         *render_federation_refusal(),
         "",
         "\t# The login form and the arrival link's form carry a body, which forward_auth does",

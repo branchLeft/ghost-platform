@@ -86,9 +86,13 @@ render_demo_site.py --base BASE --site 0=EDGE0.json --site 1=EDGE1.json \
 - **Federation is refused for every slot.** `/.ghost/activitypub*`,
   `/.well-known/webfinger*` and `/.well-known/nodeinfo*` answer 404 before the
   gate. A demo never has federation (render-core refuses an `on` demo), so no
-  slot routes to a federation service. `test_render_demo_site` asserts the
-  refusal per slot and that a route added in a scratch copy is found; the
-  sabotage `demo host: no federation refusal` turns it red.
+  slot routes to a federation service. The refusal and the gate's routes sit in
+  one `route` block in written order: Caddy runs a bare `respond` after a
+  `handle`, so a refusal written after the catch-all never answers (502). The
+  refusal is proven on real Caddy: `FederationCaddyTests` adapts the Caddyfile,
+  checks the adapted route order, and asks a running Caddy for each path. The
+  sabotages `demo host: no federation refusal` and `... matches no federation
+  path` turn it red.
 - **An uploaded file a browser would run is refused.** A request (any method)
   for a path under `/content/files/`, `/content/images/` or `/content/media/` whose name
   ends `.js .mjs .cjs .html .htm .shtml .xhtml .xht .xml .xsl .xslt .css .svg
