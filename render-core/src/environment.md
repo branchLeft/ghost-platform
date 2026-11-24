@@ -146,9 +146,12 @@ per host, serving both SMTP and the Mailgun-shaped API. Rendered from
 `mail.enabled` and the sending identity alone — never from `transport.kind`
 — so a demo (whose transactional path may be `queue`, carrying no host at
 all) still gets a bulk path pointed at the spool; the two paths share a
-spool, not a `TransportSpec` variant. The base URL is `spool.ts`'s
-`MAIL_SPOOL_BASE_URL`, the spool's own service name and port, never a
-caller-supplied address.
+spool, not a `TransportSpec` variant. Absent `mail.bulk`, the base URL is
+`spool.ts`'s `MAIL_SPOOL_BASE_URL`, the spool's own service name and port, and
+the credential is `GHOST_BULK_EMAIL_API_KEY`. A paying tenant with an SMTP
+transport may name `mail.bulk` instead: its `endpoint` and `domain` render as
+the base URL and domain, and its `credentialRef` names the secrets-file key
+the API key reference reads. See mail.md#bulk-endpoint.
 
 ## Transport environment
 
