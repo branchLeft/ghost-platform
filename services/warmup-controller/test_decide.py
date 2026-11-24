@@ -60,6 +60,31 @@ class AdvanceTests(unittest.TestCase):
         self.assertEqual(decision.state.stage, 7)
         self.assertIn("below_last_stage", decision.reasons)
 
+    def test_a_spam_reading_with_no_date_holds_the_advance(self) -> None:
+        # Postmaster's spam rate has no age of its own: a reading of unknown age must not pass.
+        evidence = dataclasses.replace(clean_evidence(real=200), gmail_spam_rate_pct=0.05)
+        decision = decide(evidence, ready_state(4), clock)
+        self.assertNotEqual(decision.action, Action.ADVANCE)
+        self.assertIn("evidence_fresh", decision.reasons)
+
+    def test_a_spam_reading_older_than_48_hours_holds_the_advance(self) -> None:
+        evidence = dataclasses.replace(
+            clean_evidence(real=200),
+            gmail_spam_rate_pct=0.05,
+            gmail_spam_rate_at=NOW - timedelta(days=30),
+        )
+        decision = decide(evidence, ready_state(4), clock)
+        self.assertEqual(decision.action, Action.HOLD)
+        self.assertEqual(decision.alerts, ("gmail_spam_rate:stale",))
+
+    def test_a_spam_reading_within_48_hours_advances(self) -> None:
+        evidence = dataclasses.replace(
+            clean_evidence(real=200),
+            gmail_spam_rate_pct=0.05,
+            gmail_spam_rate_at=NOW - timedelta(hours=1),
+        )
+        self.assertEqual(decide(evidence, ready_state(4), clock).action, Action.ADVANCE)
+
     def test_a_second_run_on_the_same_day_does_not_advance_again(self) -> None:
         first = decide(clean_evidence(), ready_state(), clock)
         again = dataclasses.replace(first.state, stage_since=TODAY - timedelta(days=7))
