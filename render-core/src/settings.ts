@@ -5,7 +5,8 @@
  * See settings.md.
  */
 
-import type { CodeInjectionSpec, MailSpec } from './descriptor.js';
+import type { ActivityPubSpec, CodeInjectionSpec, MailSpec } from './descriptor.js';
+import { federationOn } from './environment.js';
 import { renderSendingAddress } from './mail.js';
 import type { ZoneConfig } from './validate.js';
 
@@ -50,7 +51,7 @@ export interface GhostSettings extends CodeInjectionSettings {
   readonly heading_font: string;
   /** Always `''` (Ghost's "Theme default"): see settings.md. */
   readonly body_font: string;
-  /** Always `false`: see `environment.ts`, where the same feature is locked. */
+  /** True only when the descriptor says federation `on`: see `environment.ts` (federationEnvironment). */
   readonly social_web: boolean;
 }
 
@@ -65,6 +66,7 @@ export function renderSettings(
   descriptor: {
     readonly codeInjection: CodeInjectionSpec;
     readonly mail: Pick<MailSpec, 'identity'>;
+    readonly activitypub?: ActivityPubSpec;
   },
   zones: Pick<ZoneConfig, 'demoMailDomain'>
 ): GhostSettings {
@@ -75,6 +77,6 @@ export function renderSettings(
     members_support_address: renderSendingAddress(descriptor.mail.identity, zones),
     heading_font: '',
     body_font: '',
-    social_web: false,
+    social_web: federationOn(descriptor),
   };
 }
