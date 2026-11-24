@@ -8,10 +8,8 @@ from pathlib import Path
 
 from . import rules
 from .decide import Clock, decide, initial_state
-from .model import Action, Decision, Evidence, OwnerCards
+from .model import Decision, Evidence, OwnerCards
 from .store import Ledger, ledger_row, load_state, published_from, save_state, write_published
-
-_RECORDED_BETWEEN_DAILY_ROWS = frozenset({Action.STEP_DOWN, Action.STOP, Action.RESUME})
 
 
 @dataclass(frozen=True)
@@ -38,7 +36,8 @@ def run_once(
     row_kind = None
     if not ledger.has_daily(decision.day):
         row_kind = "daily"
-    elif decision.action in _RECORDED_BETWEEN_DAILY_ROWS:
+    elif decision.state != state:
+        # Any state change the day's daily row did not record: step down, stop, resume, advance, window restart.
         row_kind = "event"
     if row_kind is not None:
         ledger.append(
