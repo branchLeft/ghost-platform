@@ -162,6 +162,7 @@ const TENANT_BILLING = '0014_tenant_billing';
 const DEMO_EXTENSION = '0016_demo_extension_request';
 const TENANT_ERASURE = '0015_tenant_erasure_request';
 const PROFESSIONAL_ENQUIRY = '0017_professional_enquiry';
+const ACCOUNT = '0018_account_entity';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -249,6 +250,19 @@ export function manifest(major: number, database: string): readonly ManifestObje
       kind: 'table',
       identity: 'portal.tenant_register',
       since: REGISTER,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['SELECT'] },
+        { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT'] },
+      ],
+    },
+    // TenantDb reads its own account through its register row; OwnerDb
+    // registerTenant inserts the account a new tenant belongs to, and
+    // listAccounts reads. Nothing updates or deletes an account, and a tenant
+    // holds SELECT alone.
+    {
+      kind: 'table',
+      identity: 'portal.account',
+      since: ACCOUNT,
       grants: [
         { grantee: 'tenantRole', privileges: ['SELECT'] },
         { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT'] },
@@ -502,6 +516,7 @@ export function rowSecurityEnabled(want: RowSecurity, applied: readonly string[]
 /** Row security on each manifest table, exactly (M08). */
 export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.tenant_register': { enabled: true, forced: false },
+  'portal.account': { enabled: true, forced: false },
   'portal.health_reading': { enabled: true, forced: false },
   'portal.support_access_reading': { enabled: true, forced: false },
   'portal.support_access_request': { enabled: true, forced: false },
@@ -609,6 +624,16 @@ export const POLICIES: readonly PolicyEntry[] = [
     REGISTER,
     'r',
     '(zitadel_org_id = public.bound_organisation())',
+    'null'
+  ),
+  policy(
+    'portal.account',
+    'tenant_account',
+    ACCOUNT,
+    'r',
+    // As PostgreSQL deparses it: a sub-select prints over three lines.
+    '(account_id = ( SELECT tenant_register.account_id\n   FROM portal.tenant_register\n' +
+      '  WHERE (tenant_register.tenant_id = public.bound_tenant())))',
     'null'
   ),
   policy('portal.health_reading', 'tenant_isolation', HEALTH, '*', `(${BOUND})`, `(${BOUND})`),
@@ -829,6 +854,31 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
             'tenant_register_tenant_name_unique ON portal.tenant_register USING btree (tenant_name)',
         ],
       },
+      // Every tenant belongs to an account, backfilled by the account migration.
+      {
+        since: ACCOUNT,
+        lines: [
+          `column account_id uuid notnull=true ${PLAIN}`,
+          'constraint tenant_register_account_id_account_account_id_fk FOREIGN KEY ' +
+            '(account_id) REFERENCES portal.account(account_id)',
+        ],
+      },
+    ],
+  },
+  'portal.account': {
+    since: ACCOUNT,
+    lines: [
+      `column account_id uuid notnull=true ${PLAIN}`,
+      `column identity_org_id text notnull=true ${PLAIN}`,
+      `column created_at timestamp with time zone notnull=true ${PLAIN}`,
+      'default account_id gen_random_uuid()',
+      'default created_at now()',
+      'constraint account_pkey PRIMARY KEY (account_id)',
+      'constraint account_identity_org_id_unique UNIQUE (identity_org_id)',
+      'index portal.account_pkey CREATE UNIQUE INDEX account_pkey ' +
+        'ON portal.account USING btree (account_id)',
+      'index portal.account_identity_org_id_unique CREATE UNIQUE INDEX ' +
+        'account_identity_org_id_unique ON portal.account USING btree (identity_org_id)',
     ],
   },
   'portal.health_reading': {
