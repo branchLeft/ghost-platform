@@ -196,6 +196,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0016_demo_extension_request',
       'applied migration 0017_professional_enquiry',
       'applied migration 0018_federation_setting',
+      'applied migration 0019_account_entity',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',
@@ -541,6 +542,43 @@ describe('--migrate-only on a real server', () => {
     expect(dropped.err.join('\n')).toMatch(
       /missing M21: portal\.tenant_register constraint tenant_register_tenant_name_unique/
     );
+  });
+
+  it('backfills one account per existing tenant, each holding its own organisation', async () => {
+    const all = readMigrations();
+    const accountIndex = all.findIndex((m) => m.tag === '0019_account_entity');
+    expect(accountIndex).toBeGreaterThan(0);
+    expect((await run({ migrations: all.slice(0, accountIndex) })).code).toBe(0);
+    // Tenants as the register held them before any account existed: a real
+    // tenant, a second real tenant and a demo slot, each under its own organisation.
+    await admin(
+      PROV_DB,
+      `INSERT INTO portal.tenant_register (tenant_id, zitadel_org_id, kind) VALUES
+         ('a0000000-0000-4000-8000-000000000001', 'seed-org-1', 'REAL'),
+         ('a0000000-0000-4000-8000-000000000002', 'seed-org-2', 'REAL'),
+         ('a0000000-0000-4000-8000-000000000003', 'seed-org-3', 'DEMO')`
+    );
+    const result = await migrate();
+    expect(result.err).toEqual([]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('applied migration 0019_account_entity');
+    expect(result.out).toContain('post-check passed: the server matches the manifest');
+    const [counted] = await admin(
+      PROV_DB,
+      `SELECT
+         (SELECT count(*) FROM portal.account) AS accounts,
+         (SELECT count(*) FROM portal.tenant_register) AS tenants,
+         (SELECT count(DISTINCT account_id) FROM portal.tenant_register) AS linked_accounts,
+         (SELECT count(*) FROM portal.tenant_register t
+            JOIN portal.account a ON a.account_id = t.account_id
+           WHERE a.identity_org_id = t.zitadel_org_id) AS matched`
+    );
+    expect(counted!.rows[0]).toEqual({
+      accounts: '3',
+      tenants: '3',
+      linked_accounts: '3',
+      matched: '3',
+    });
   });
 
   it('refuses a kind column the manifest does not describe, and a missing one', async () => {
