@@ -72,6 +72,7 @@ def with_day(evidence: Evidence, when: date, **changes: int | bool) -> Evidence:
         seed_placement=evidence.seed_placement,
         dmarc_alignment_pct=evidence.dmarc_alignment_pct,
         gmail_spam_rate_pct=evidence.gmail_spam_rate_pct,
+        gmail_spam_rate_at=evidence.gmail_spam_rate_at,
     )
 
 

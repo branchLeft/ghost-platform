@@ -78,6 +78,8 @@ class Evidence:
     dmarc_alignment_pct: float | None = None
     # Gmail spam rate from Postmaster Tools; None while Postmaster shows no data (it goes blank at low volume).
     gmail_spam_rate_pct: float | None = None
+    # When that reading was taken. A reading with no time, or one older than the freshness limit, is stale.
+    gmail_spam_rate_at: datetime | None = None
 
     def day(self, when: date) -> DayEvidence:
         """The evidence for one day; a day the feed has no row for sent nothing."""

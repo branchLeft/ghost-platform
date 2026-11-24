@@ -48,13 +48,13 @@ class AdvanceTests(unittest.TestCase):
             with self.subTest(stage=caps.stage):
                 evidence = clean_evidence(real=caps.total // 2)
                 if caps.stage >= 4:
-                    evidence = dataclasses.replace(evidence, gmail_spam_rate_pct=0.02)
+                    evidence = dataclasses.replace(evidence, gmail_spam_rate_pct=0.02, gmail_spam_rate_at=NOW)
                 decision = decide(evidence, ready_state(caps.stage), clock)
                 self.assertEqual(decision.action, Action.ADVANCE)
                 self.assertEqual(decision.state.stage, caps.stage + 1)
 
     def test_the_last_stage_never_advances(self) -> None:
-        evidence = dataclasses.replace(clean_evidence(real=1600), gmail_spam_rate_pct=0.02)
+        evidence = dataclasses.replace(clean_evidence(real=1600), gmail_spam_rate_pct=0.02, gmail_spam_rate_at=NOW)
         decision = decide(evidence, ready_state(7), clock)
         self.assertEqual(decision.action, Action.HOLD)
         self.assertEqual(decision.state.stage, 7)
@@ -155,7 +155,7 @@ class AdvanceGateTests(unittest.TestCase):
                 False,
             ),
             ("bounces at 2 percent", _bounces(7), "hard_bounce_rate", True),
-            ("spam at 0.10", _evidence(gmail_spam_rate_pct=0.10), "gmail_spam_rate", True),
+            ("spam at 0.10", _evidence(gmail_spam_rate_pct=0.10, gmail_spam_rate_at=NOW), "gmail_spam_rate", True),
             (
                 "deferral 71 hours ago",
                 _evidence(deferrals=(Deferral(DestinationGroup.GMAIL, NOW - timedelta(hours=71)),)),
@@ -199,7 +199,7 @@ class AdvanceGateTests(unittest.TestCase):
     def test_each_gate_passes_just_inside_its_limit(self) -> None:
         cases: list[tuple[str, Spoil]] = [
             ("six bounces in 350", _bounces(6)),
-            ("spam at 0.09", _evidence(gmail_spam_rate_pct=0.09)),
+            ("spam at 0.09", _evidence(gmail_spam_rate_pct=0.09, gmail_spam_rate_at=NOW)),
             (
                 "deferral at 72 hours",
                 _evidence(deferrals=(Deferral(DestinationGroup.GMAIL, NOW - timedelta(hours=72)),)),

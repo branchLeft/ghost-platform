@@ -59,6 +59,10 @@ def stale_feeds(evidence: Evidence, now: datetime) -> tuple[str, ...]:
             problems.append(f"{feed.value}:missing")
         elif now - updated > timedelta(hours=STALE_AFTER_HOURS):
             problems.append(f"{feed.value}:stale")
+    if evidence.gmail_spam_rate_pct is not None:
+        taken = evidence.gmail_spam_rate_at
+        if taken is None or now - taken > timedelta(hours=STALE_AFTER_HOURS):
+            problems.append("gmail_spam_rate:stale")
     return tuple(problems)
 
 
