@@ -526,9 +526,10 @@ test('only the allow-listed workflows pass exemptions-path, each at a file that 
 
 // The owner's 30-day acceptance of five OpenSSL findings no update can clear:
 // the system libssl and libcrypto packages of the tenant and portal images,
-// granted 2026-11-23, lapsing 2026-12-23. The exemption file may hold exactly
-// these twenty entries (five advisories, two packages, two images) for those
-// packages, and nothing else for those two images. Widening it by an advisory,
+// granted 2026-11-23, lapsing 2026-12-23, and of the demo gate image, granted
+// 2026-11-24, lapsing 2026-12-24. The exemption file may hold exactly these
+// thirty entries (five advisories, two packages, three images) for those
+// packages, and nothing else for those three images. Widening it by an advisory,
 // a package or an image, or giving an entry no expiry or a later one, fails
 // here. Removing the entries is the follow-up that ends the acceptance, and it
 // removes this block with them.
@@ -540,9 +541,19 @@ const OPENSSL_VULNERABILITIES = [
   'CVE-2026-84786',
 ];
 const OPENSSL_PACKAGES = ['libcrypto3', 'libssl3'];
-const OPENSSL_IMAGES = [PUBLISHERS['registry-push.yml'], PUBLISHERS['portal-apps-image.yml']];
+// The demo gate is a third image in the same acceptance, granted a day later
+// (2026-11-24) for its own 30 days. Its extension is pending the owner's
+// confirmation; the 2026-11-23 decision named only the first two images.
+const DEMO_GATE_IMAGE = 'ghcr.io/branchleft/demo-gate';
+const OPENSSL_IMAGES = [
+  PUBLISHERS['registry-push.yml'],
+  PUBLISHERS['portal-apps-image.yml'],
+  DEMO_GATE_IMAGE,
+];
 const OPENSSL_GRANTED = '2026-11-23';
 const OPENSSL_EXPIRES = '2026-12-23';
+const grantedFor = (image) => (image === DEMO_GATE_IMAGE ? '2026-11-24' : OPENSSL_GRANTED);
+const expiresFor = (image) => (image === DEMO_GATE_IMAGE ? '2026-12-24' : OPENSSL_EXPIRES);
 
 export function opensslExemptionProblems(source) {
   const data = JSON.parse(source);
@@ -558,13 +569,14 @@ export function opensslExemptionProblems(source) {
       OPENSSL_PACKAGES.includes(entry.package) &&
       OPENSSL_IMAGES.includes(entry.image);
     if (!inScope) {
-      found.push(`${id} is outside the five advisories, two packages and two images accepted`);
+      found.push(`${id} is outside the five advisories, two packages and three images accepted`);
       continue;
     }
     seen.set(id, (seen.get(id) ?? 0) + 1);
-    if (entry.granted !== OPENSSL_GRANTED) found.push(`${id} is not granted on ${OPENSSL_GRANTED}`);
-    if (entry.expires !== OPENSSL_EXPIRES)
-      found.push(`${id} does not expire on ${OPENSSL_EXPIRES}`);
+    if (entry.granted !== grantedFor(entry.image))
+      found.push(`${id} is not granted on ${grantedFor(entry.image)}`);
+    if (entry.expires !== expiresFor(entry.image))
+      found.push(`${id} does not expire on ${expiresFor(entry.image)}`);
     if (typeof entry['approved-by'] !== 'string' || entry['approved-by'].trim() === '') {
       found.push(`${id} names no approved-by`);
     }
@@ -597,7 +609,19 @@ test('the OpenSSL exemption check fails when the scope is widened or the expiry 
     );
     return JSON.stringify(copy);
   };
+  // The demo-gate entries carry their own dates: a demo-gate entry given the
+  // tenant and portal dates (granted 2026-11-23, expiring 2026-12-23) must fail.
+  const mutateDemoGate = (change) => {
+    const copy = structuredClone(real);
+    change(
+      copy.exemptions,
+      copy.exemptions.findIndex((e) => e.image === DEMO_GATE_IMAGE)
+    );
+    return JSON.stringify(copy);
+  };
   const cases = [
+    [mutateDemoGate((all, i) => (all[i].expires = '2026-12-23')), 'does not expire on 2026-12-24'],
+    [mutateDemoGate((all, i) => (all[i].granted = '2026-11-23')), 'is not granted on 2026-11-24'],
     [
       mutate((all) => all.push({ ...sample, vulnerability: 'CVE-2026-107496' })),
       'outside the five',
