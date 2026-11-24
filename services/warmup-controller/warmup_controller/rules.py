@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from .model import (
     ControllerState,
@@ -51,18 +51,25 @@ def window(today: date, days: int) -> tuple[date, ...]:
     return tuple(today - timedelta(days=offset) for offset in range(days, 0, -1))
 
 
+def is_fresh(updated: datetime, now: datetime) -> bool:
+    """Updated within the freshness limit. A time in the future, or with no timezone, is not fresh."""
+    if updated.tzinfo is None:
+        return False
+    return timedelta(0) <= now - updated <= timedelta(hours=STALE_AFTER_HOURS)
+
+
 def stale_feeds(evidence: Evidence, now: datetime) -> tuple[str, ...]:
-    """Feeds that are missing or older than the freshness limit, as `feed:missing` or `feed:stale`."""
+    """Feeds that are missing or not fresh, as `feed:missing` or `feed:stale`."""
     problems: list[str] = []
     for feed in Feed:
         updated = evidence.feeds.get(feed)
         if updated is None:
             problems.append(f"{feed.value}:missing")
-        elif now - updated > timedelta(hours=STALE_AFTER_HOURS):
+        elif not is_fresh(updated, now):
             problems.append(f"{feed.value}:stale")
     if evidence.gmail_spam_rate_pct is not None:
         taken = evidence.gmail_spam_rate_at
-        if taken is None or now - taken > timedelta(hours=STALE_AFTER_HOURS):
+        if taken is None or not is_fresh(taken, now):
             problems.append("gmail_spam_rate:stale")
     return tuple(problems)
 
@@ -73,7 +80,7 @@ def day_is_read(evidence: Evidence, now: datetime, when: date) -> bool:
     Otherwise a later run on the same day must read the day again, so a stop is never skipped.
     """
     updated = evidence.feeds.get(Feed.DELIVERY)
-    fresh = updated is not None and now - updated <= timedelta(hours=STALE_AFTER_HOURS)
+    fresh = updated is not None and is_fresh(updated, now)
     return fresh and any(entry.day == when for entry in evidence.days)
 
 
@@ -86,7 +93,8 @@ def stop_days(today: date, evaluated_through: date | None) -> tuple[date, ...]:
 
 
 def deferrals_on(evidence: Evidence, when: date) -> tuple[Deferral, ...]:
-    return tuple(d for d in evidence.deferrals if d.at.date() == when)
+    """Deferrals on a UTC day. A deferral's local date can be the day before its UTC date."""
+    return tuple(d for d in evidence.deferrals if d.at.astimezone(UTC).date() == when)
 
 
 def day_is_clean(day: DayEvidence, evidence: Evidence) -> bool:

@@ -17,6 +17,7 @@ from scenarios import (
     ready_state,
     with_day,
 )
+from warmup_controller import rules
 from warmup_controller.decide import NaiveClockError, decide, initial_state
 from warmup_controller.model import (
     Action,
@@ -24,6 +25,7 @@ from warmup_controller.model import (
     DayEvidence,
     Deferral,
     Evidence,
+    EvidenceError,
     Feed,
     OwnerCards,
     ResumeCard,
@@ -589,6 +591,67 @@ class PurityTests(unittest.TestCase):
     def test_a_clock_with_no_timezone_is_refused(self) -> None:
         with self.assertRaises(NaiveClockError):
             decide(clean_evidence(), ready_state(), lambda: NOW.replace(tzinfo=None))
+
+
+class FreshnessAndEvidenceTests(unittest.TestCase):
+    def test_a_feed_dated_in_the_future_is_stale(self) -> None:
+        evidence = dataclasses.replace(
+            clean_evidence(),
+            feeds={**clean_evidence().feeds, Feed.DELIVERY: NOW + timedelta(days=30)},
+        )
+        decision = decide(evidence, ready_state(), clock)
+        self.assertEqual(decision.action, Action.HOLD)
+        self.assertEqual(decision.alerts, ("delivery:stale",))
+
+    def test_a_feed_with_no_timezone_is_stale_and_does_not_raise(self) -> None:
+        evidence = dataclasses.replace(
+            clean_evidence(),
+            feeds={**clean_evidence().feeds, Feed.DELIVERY: datetime(2026, 12, 9, 6, 0)},
+        )
+        decision = decide(evidence, ready_state(), clock)
+        self.assertEqual(decision.action, Action.HOLD)
+        self.assertEqual(decision.alerts, ("delivery:stale",))
+
+    def test_a_negative_spam_rate_is_refused_when_the_evidence_is_built(self) -> None:
+        with self.assertRaises(EvidenceError):
+            dataclasses.replace(clean_evidence(), gmail_spam_rate_pct=-5.0)
+
+    def test_a_spam_rate_over_100_percent_is_refused(self) -> None:
+        with self.assertRaises(EvidenceError):
+            dataclasses.replace(clean_evidence(), gmail_spam_rate_pct=100.5)
+
+    def test_a_negative_count_is_refused_when_the_day_is_built(self) -> None:
+        with self.assertRaises(EvidenceError):
+            DayEvidence(day=YESTERDAY, rejections_5_7=-1)
+
+    def test_a_deferral_at_2200_utc_minus_5_is_filed_under_the_next_utc_day(self) -> None:
+        local_zone = timezone(timedelta(hours=-5))
+        at = datetime(YESTERDAY.year, YESTERDAY.month, YESTERDAY.day, 22, 0, tzinfo=local_zone)
+        evidence = dataclasses.replace(
+            clean_evidence(), deferrals=(Deferral(DestinationGroup.GMAIL, at),)
+        )
+        self.assertEqual(rules.deferrals_on(evidence, YESTERDAY), ())
+        self.assertEqual(len(rules.deferrals_on(evidence, TODAY)), 1)
+
+    def test_a_new_stop_while_held_is_kept_with_the_earlier_reasons(self) -> None:
+        held = _stopped("blocklist", since=timedelta(days=3))
+        evidence = dataclasses.replace(
+            clean_evidence(real=100), gmail_spam_rate_pct=0.5, gmail_spam_rate_at=NOW
+        )
+        decision = decide(evidence, held, clock)
+        self.assertEqual(decision.action, Action.HOLD)
+        self.assertEqual(decision.state.stop_reasons, ("blocklist", "gmail_spam_rate"))
+        self.assertEqual(decision.state.stopped_at, NOW)
+
+    def test_a_blocklist_stop_that_gained_a_spam_stop_does_not_resume_after_24_hours(self) -> None:
+        held = _stopped("blocklist", since=timedelta(days=3))
+        spammy = dataclasses.replace(
+            clean_evidence(real=100), gmail_spam_rate_pct=0.5, gmail_spam_rate_at=NOW
+        )
+        first = decide(spammy, held, clock)
+        decision = decide(clean_evidence(real=100), first.state, clock)
+        self.assertEqual(decision.action, Action.HOLD)
+        self.assertTrue(decision.state.held)
 
 
 if __name__ == "__main__":

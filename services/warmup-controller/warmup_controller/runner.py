@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import rules
-from .decide import Clock, decide, initial_state
+from .decide import Clock, NaiveClockError, decide, initial_state
 from .model import Action, ControllerState, Decision, Evidence, OwnerCards
 from .store import (
     Ledger,
@@ -40,8 +40,15 @@ def run_once(
     nothing. A protective decision (stop, step down) is published and saved first; its ledger row
     is best effort, and a row that cannot be written is an alert on the returned decision.
     A state file that exists and cannot be read stops the run before any write.
+
+    Raises:
+        NaiveClockError: the clock returned a time with no timezone.
     """
-    now = clock().astimezone(UTC)
+    moment = clock()
+    if moment.tzinfo is None:
+        # A naive time would be read as host-local; the run must not depend on the host's zone.
+        raise NaiveClockError
+    now = moment.astimezone(UTC)
     state = load_state(paths.controller_state) or initial_state(now.date())
     decision = decide(evidence, state, lambda: now, cards)
     ledger = Ledger(paths.ledger)
