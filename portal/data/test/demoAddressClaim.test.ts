@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DemoState } from '../src/demoLifecycle.js';
 import { DemoRequestExistsError, type DemoRequestInput } from '../src/demoRequest.js';
+import type { DemoExtensionInput } from '../src/demoExtension.js';
 import { ProspectDb } from '../src/prospect/index.js';
 import { ProvisionerDb } from '../src/provisioner/index.js';
 import { demoRequest } from '../src/schema.js';
@@ -141,5 +142,54 @@ describe('only the lifecycle worker may clear a claim, and only to false', () =>
       )
     );
     expect((error as { code?: string }).code).toBe('42501');
+  });
+});
+
+const WORDING = 'EXTENSION_CONSENT_WORDING';
+
+function answers(): DemoExtensionInput {
+  return {
+    stillEvaluating: 'EVALUATING_ANSWER',
+    whatIsMissing: 'MISSING_ANSWER',
+    audienceSize: 'audience-small',
+    chargesReaders: true,
+    moveWhen: 'move-soon',
+    consent: true,
+    consentWording: WORDING,
+  };
+}
+
+describe('a prospect whose earlier demo FAILED reads and extends the new request', () => {
+  it('reads the second request, not the FAILED one, on the status page', async () => {
+    const address = `status-${randomUUID()}@example.invalid`;
+    await claim(address, PATH.FAILED);
+    const second = await prospect.submit(request(address));
+    expect((await prospect.ownRequest(address))?.demoId).toBe(second.demoId);
+  });
+
+  it('files the extension against the second demo, not the FAILED one', async () => {
+    const address = `extend-${randomUUID()}@example.invalid`;
+    await claim(address, PATH.FAILED);
+    const second = await prospect.submit(request(address));
+    const result = await prospect.requestExtension(address, answers());
+    expect(result).toEqual({ demoId: second.demoId });
+  });
+});
+
+describe('the front door cannot write the open claim', () => {
+  it('refuses its insert of a request with claim_open false', async () => {
+    const error = await rejection(
+      fx.prospect.query(
+        `INSERT INTO portal.demo_request (demo_id, verified_subject, verified_address,
+           publication_name, new_to_ghost, outlet_type, consent_wording, explainer_wording, claim_open)
+         VALUES ($1, 's', $2, 'p', true, 'o', 'c', 'e', false)`,
+        [randomUUID(), `forged-${randomUUID()}@example.invalid`]
+      )
+    );
+    expect((error as { code?: string }).code).toBe('42501');
+  });
+
+  it('still accepts its own insert with the default claim', async () => {
+    await expect(prospect.submit(request())).resolves.toMatchObject({ demoId: expect.any(String) });
   });
 });

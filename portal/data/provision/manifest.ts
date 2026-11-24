@@ -162,7 +162,7 @@ const TENANT_BILLING = '0014_tenant_billing';
 const DEMO_EXTENSION = '0016_demo_extension_request';
 const TENANT_ERASURE = '0015_tenant_erasure_request';
 const PROFESSIONAL_ENQUIRY = '0017_professional_enquiry';
-const OPEN_CLAIM = '0018_demo_one_open_claim';
+const OPEN_CLAIM = '0020_demo_one_open_claim';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -575,6 +575,21 @@ export const NAMED_INDEXES: readonly NamedIndex[] = [
   { identity: 'portal.demo_request_one_open_claim_per_address', since: OPEN_CLAIM },
 ];
 
+/**
+ * The policies the server holds once `applied` is in. A later migration may rewrite a
+ * policy: the newest applied entry for its table and name is the one expected.
+ */
+export function policiesAt(applied: readonly string[]): readonly PolicyEntry[] {
+  const held = new Map<string, PolicyEntry>();
+  for (const entry of POLICIES) {
+    if (!applied.includes(entry.since)) continue;
+    const key = `${entry.table} ${entry.name}`;
+    const kept = held.get(key);
+    if (kept === undefined || entry.since > kept.since) held.set(key, entry);
+  }
+  return [...held.values()];
+}
+
 /** The row-security policies, exactly (M20), as the server deparses them. */
 export interface PolicyEntry {
   table: string;
@@ -725,6 +740,17 @@ export const POLICIES: readonly PolicyEntry[] = [
   // column to `public.bound_address()` and nothing else. The lifecycle worker
   // reads every request. The owner role bypasses row security by attribute.
   policy('portal.demo_request', 'request_insert', STATUS_READ, 'a', 'null', 'true', 'prospectRole'),
+  // The front door may insert only a request whose claim is open: its insert is
+  // not granted by column, so the policy pins claim_open to the default.
+  policy(
+    'portal.demo_request',
+    'request_insert',
+    OPEN_CLAIM,
+    'a',
+    'null',
+    'claim_open',
+    'prospectRole'
+  ),
   policy(
     'portal.demo_request',
     'own_request',
