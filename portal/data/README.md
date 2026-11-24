@@ -470,13 +470,16 @@ grant (M06) or a grant on a fourth column (M07) is refused. The tenant binding
 (`portal.tenant_id`) has the same property and is the isolation the tenant
 tables rest on; it is not changed here.
 
-**One request per verified address.** The verified address is unique over all
-time: a second submission for an address is refused by the table
-(`demo_request_verified_address_unique`, SQLSTATE `23505`) whichever process
-sends it, and `ProspectDb.submit` turns it into `DemoRequestExistsError`. This
-is stricter than "one open demo per address": an address whose demo FAILED may,
-by design, start another, and that supersession is not built here (it needs the
-lifecycle worker's say, since the front door cannot read a demo's state).
+**One open request per verified address.** A partial unique index on
+`verified_address` where `claim_open` holds refuses a second request for an
+address while an earlier one is open, whichever process sends it
+(`demo_request_one_open_claim_per_address`, SQLSTATE `23505`); `ProspectDb.submit`
+turns it into `DemoRequestExistsError`. `claim_open` is true on insert. The
+lifecycle worker clears it in the same transaction as a FAILED event, which is
+the only role that may change it: `portal_provisioner` holds `UPDATE` on that
+column alone, and its row policy `provisioner_close_claim` admits only the value
+false. An address whose demo FAILED may therefore request again; any other state
+keeps the claim open. A flag left set after a FAILED fails closed.
 
 **What the table checks.** The address is lower-case with one `@` and a dotted
 domain and at most 254 characters; the name, description, import source and

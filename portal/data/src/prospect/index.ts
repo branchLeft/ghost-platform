@@ -64,7 +64,8 @@ export class ProspectDb {
   /**
    * Records a prospect's request and returns the opaque id the demo will run
    * under. The table refuses a second request for the same verified address
-   * whichever process sends it.
+   * while an earlier one is open, whichever process sends it; an address whose
+   * earlier demo FAILED may request again.
    *
    * @throws InvalidDemoRequestError
    * @throws DemoRequestExistsError

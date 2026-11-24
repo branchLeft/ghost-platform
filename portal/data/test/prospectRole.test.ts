@@ -174,7 +174,7 @@ describe('a request is recorded with its answers and a timestamp', () => {
   });
 });
 
-describe('one request per verified address, enforced by the table', () => {
+describe('one open request per verified address, enforced by the table', () => {
   it('refuses a second submission for the same address with a typed error', async () => {
     const first = request();
     await prospect.submit(first);
@@ -184,7 +184,7 @@ describe('one request per verified address, enforced by the table', () => {
     expect(error).toBeInstanceOf(DemoRequestExistsError);
   });
 
-  it('refuses it at the table, whichever process sends it: SQLSTATE 23505 on the address constraint', async () => {
+  it('refuses it at the table, whichever process sends it: SQLSTATE 23505 on the open-claim index', async () => {
     const taken = row();
     await fx.adminDb.insert(demoRequest).values(taken);
     const error = await rejection(
@@ -194,7 +194,7 @@ describe('one request per verified address, enforced by the table', () => {
     );
     expect(readDatabaseError(error)).toEqual({
       code: UNIQUE_VIOLATION,
-      constraint: 'demo_request_verified_address_unique',
+      constraint: 'demo_request_one_open_claim_per_address',
     });
   });
 

@@ -127,6 +127,13 @@
       "when": 1795379928829,
       "tag": "0017_professional_enquiry",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795542637339,
+      "tag": "0018_demo_one_open_claim",
+      "breakpoints": true
     }
   ]
 }
