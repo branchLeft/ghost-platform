@@ -115,8 +115,20 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("AUTHORISATIONS.md", True, "never-list"),
     (".claude/settings.json", True, "hooks and settings"),
     (".claude/hooks/guard.py", True, "hooks"),
-    (".github/workflows/registry-push.yml", True, "workflow (SYNC-1 tail)"),
-    (".github/actions/setup-pnpm-node/action.yml", True, "action (SYNC-1 tail)"),
+    (".github/workflows/build.yml", True, "required check: docker build"),
+    (".github/workflows/infra-tenant-ci.yml", True, "required check: Tenant type check"),
+    (".github/workflows/repo-tooling-ci.yml", True, "required check: Format and lint"),
+    (".github/workflows/digest-line-scope.yml", True, "required check: Digest-only line scope"),
+    (".github/workflows/standards.yml", True, "required check (SYNC-1 tail)"),
+    (".github/workflows/docs-lint.yml", True, "required check (SYNC-1 tail)"),
+    (".github/actions/setup-pnpm-node/action.yml", True, "action the required checks call"),
+    (".github/workflows/infra-hosts-ci.yml", True, "environment-gated apply"),
+    (".github/workflows/provision-tenant.yml", True, "environment-gated provisioning"),
+    (".github/workflows/promote-candidate.yml", True, "signs the promotion attestation"),
+    (".github/workflows/registry-push.yml", True, "scans and attests the tenant image"),
+    (".github/workflows/odask-image.yml", True, "image workflow (*-image.yml)"),
+    (".github/workflows/publish-ring-controller.yml", True, "package publish (publish-*.yml)"),
+    (".github/workflows/broker-release.yml", True, "attested release"),
     (".standardsignore", True, "escape hatch"),
     (".standards.mode", True, "escape hatch"),
     (".docs-lint.mode", True, "escape hatch"),
@@ -161,6 +173,15 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("render-core/LICENSE", True, "legal text"),
     ("portal/apps/src/tenant/explainerPages.ts", True, "product copy"),
     # Released: trust extended to agents on sensitive code.
+    (".github/workflows/codeql.yml", False, "scanning, not a required check"),
+    (".github/workflows/broker-ci.yml", False, "component CI, not required"),
+    (".github/workflows/mail-gate-ci.yml", False, "component CI, not required"),
+    (".github/workflows/gate-set-ci.yml", False, "CI of a gate, not required"),
+    (".github/workflows/release-watcher-run.yml", False, "scheduled watcher"),
+    (".github/workflows/provisioning-gate-watch.yml", False, "scheduled monitor"),
+    (".github/workflows/image-mirror.yml", False, "mirrors third-party images"),
+    (".github/dependabot.yml", False, "update settings"),
+    (".github/image-mirror/images.json", False, "list of images to mirror"),
     ("Dockerfile", False, "image build"),
     ("portal/Dockerfile", False, "image build"),
     ("services/mail-collector/Dockerfile", False, "image build"),
@@ -284,6 +305,61 @@ class OwnsTheSamples(CodeownersCase):
                 sample += "file"
             with self.subTest(pattern=pattern):
                 self.assertIsNotNone(owning_rule(self.rules, sample))
+
+
+_DEPLOY_GATE_MARKERS = (
+    re.compile(r"^\s+environment:", re.MULTILINE),
+    re.compile(r"attest-and-verify-image|attest-build-provenance|actions/attest"),
+)
+_REQUIRED_JOB_NAMES = (
+    "docker build",
+    "Tenant type check",
+    "Format and lint",
+    "Digest-only line scope",
+)
+
+
+class GateWorkflowsKeepTheirOwner(CodeownersCase):
+    """A workflow that gates a deploy or emits a required check must stay owned.
+
+    The sample table names examples; this reads every workflow, so a new one that
+    adds an environment gate, an attestation or a required job name cannot be
+    released by a name the lines above do not match.
+    """
+
+    def _workflows(self) -> list[pathlib.Path]:
+        found = sorted((REPO / ".github" / "workflows").glob("*.yml"))
+        self.assertGreater(len(found), 10, "no workflows found to check")
+        return found
+
+    def test_every_environment_gated_or_attesting_workflow_is_owned(self) -> None:
+        unowned = [
+            f".github/workflows/{path.name}"
+            for path in self._workflows()
+            if any(m.search(path.read_text(encoding="utf-8")) for m in _DEPLOY_GATE_MARKERS)
+            and owning_rule(self.rules, f".github/workflows/{path.name}") is None
+        ]
+        self.assertEqual(
+            unowned,
+            [],
+            "\nThese workflows hold an environment gate or sign an attestation, so a "
+            "change to one can weaken a deploy gate. Own them:\n" + "\n".join(unowned),
+        )
+
+    def test_every_required_check_is_emitted_by_an_owned_workflow(self) -> None:
+        for name in _REQUIRED_JOB_NAMES:
+            emitters = [
+                path.name
+                for path in self._workflows()
+                if re.search(rf"^    name: {re.escape(name)}\s*$", path.read_text(encoding="utf-8"), re.MULTILINE)
+            ]
+            with self.subTest(check=name):
+                self.assertTrue(emitters, f"no workflow emits the required check {name!r}")
+                for workflow in emitters:
+                    self.assertIsNotNone(
+                        owning_rule(self.rules, f".github/workflows/{workflow}"),
+                        f"{workflow} emits the required check {name!r} and is not owned",
+                    )
 
 
 class GateSetFilesKeepTheirOwner(CodeownersCase):
