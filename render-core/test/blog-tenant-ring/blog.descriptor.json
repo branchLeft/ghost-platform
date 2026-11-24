@@ -3,7 +3,7 @@
   "kind": "tenant",
   "slug": "blog",
   "siteUrl": "https://blog.branchleft.co.uk",
-  "image": "ghcr.io/branchleft/ghost-tenant@sha256:BLOG_TENANT_RING_DIGEST_UNSET",
+  "image": "ghcr.io/branchleft/ghost-tenant@sha256:6209d10360e108d143e2318350fda42ee44453f96108b1e8eaf572c47129db9e",
   "uid": 30009,
   "ports": {
     "a": 8121,

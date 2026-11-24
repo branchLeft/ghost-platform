@@ -31,7 +31,9 @@ const REPO = 'branchLeft/ghost-tenant-blog';
 const ZONES: ZoneConfig = TEST_ZONES;
 const APP_T1 = '10.20.1.201';
 const DB_T1 = '10.20.1.200';
-const FIXTURE_DIGEST = 'a'.repeat(64);
+/** The blog's attested image: the digest its slot deploys (ISSUE 4135) and the boot test ran. */
+const BLOG_IMAGE_DIGEST = '6209d10360e108d143e2318350fda42ee44453f96108b1e8eaf572c47129db9e';
+const UNSET_IMAGE = 'ghcr.io/branchleft/ghost-tenant@sha256:BLOG_TENANT_RING_DIGEST_UNSET';
 
 /** The old estate's addresses (app1 and db1), which no tenant-ring artefact may carry. */
 const OLD_ESTATE_ADDRESSES: readonly RegExp[] = [/10\.20\.1\.100(?!\d)/, /10\.20\.1\.20(?!\d)/];
@@ -117,18 +119,7 @@ function accepted(descriptor: TenantStackDescriptor): TenantStackDescriptor {
   return validateTenantStack(descriptor, ZONES, { claimantRepo: REPO });
 }
 
-/** The descriptor with its image set to a fixture digest, for rendering only. */
-function withFixtureDigest(descriptor: TenantStackDescriptor): TenantStackDescriptor {
-  return {
-    ...descriptor,
-    image:
-      `ghcr.io/branchleft/ghost-tenant@sha256:${FIXTURE_DIGEST}` as TenantStackDescriptor['image'],
-  };
-}
-
-function artefacts(
-  descriptor: TenantStackDescriptor = withFixtureDigest(loadBlog())
-): readonly Artefact[] {
+function artefacts(descriptor: TenantStackDescriptor = loadBlog()): readonly Artefact[] {
   return render(accepted(descriptor), ZONES);
 }
 
@@ -191,19 +182,26 @@ describe('demo host sources: the reserved set is read, not assumed', () => {
   });
 });
 
-describe('blog on the tenant ring: the committed descriptor cannot be placed unset', () => {
-  it('is refused until a real attested digest is set', () => {
-    expect(() => accepted(loadBlog())).toThrow(FieldValidationError);
+describe("blog on the tenant ring: the image is the blog's attested digest", () => {
+  it("pins the blog's attested digest, not the demo tenant's", () => {
+    const image = loadBlog().image;
+    expect(image).toBe(`ghcr.io/branchleft/ghost-tenant@sha256:${BLOG_IMAGE_DIGEST}`);
+    expect(image).not.toBe(loadDemo().image);
   });
 
-  it('never carries the demo tenant image', () => {
-    expect(loadBlog().image).not.toBe(loadDemo().image);
+  it('validates once the attested digest is set', () => {
+    expect(() => accepted(loadBlog())).not.toThrow();
+  });
+
+  it('still refuses the unset placeholder, so an unpinned descriptor cannot be placed', () => {
+    const unset = { ...loadBlog(), image: UNSET_IMAGE } as TenantStackDescriptor;
+    expect(() => accepted(unset)).toThrow(FieldValidationError);
   });
 });
 
 describe('blog on the tenant ring: the descriptor renders', () => {
-  it('validates for its own repository with no secret and no owner address, once the digest is set', () => {
-    const d = withFixtureDigest(loadBlog());
+  it('validates for its own repository with no secret and no owner address', () => {
+    const d = loadBlog();
     expect(() => accepted(d)).not.toThrow();
     expect(Object.keys(d)).not.toContain('ownerEmail');
     expect(JSON.stringify(d)).not.toMatch(/password|secret|apikey|token/i);
@@ -229,7 +227,7 @@ describe('blog on the tenant ring: the descriptor renders', () => {
   });
 
   it('pins the image the descriptor carries, and no other', () => {
-    const d = withFixtureDigest(loadBlog());
+    const d = loadBlog();
     expect(content(artefacts(), 'image.env')).toContain(d.image);
   });
 
@@ -278,7 +276,7 @@ describe("blog on the tenant ring: its uid and ports are not the demo host's", (
   });
 
   it('refuses the estate values, so the old addresses cannot come back unnoticed (control)', () => {
-    const sabotaged = withField(withFixtureDigest(loadBlog()), 'appHostIp', '10.20.1.100');
+    const sabotaged = withField(loadBlog(), 'appHostIp', '10.20.1.100');
     expect(estateAddressesIn(artefacts(sabotaged))).not.toEqual([]);
   });
 });
