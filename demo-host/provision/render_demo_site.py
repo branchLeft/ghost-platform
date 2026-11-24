@@ -213,7 +213,7 @@ def render_slot_body(slot: str, edge: Mapping[str, Any]) -> list[str]:
         "\t}",
         "",
         "\troute {",
-        *(f"\t{line}" if line else line for line in routing_lines(slot)),
+        *routing_lines(slot),
         "\t}",
     ]
 
