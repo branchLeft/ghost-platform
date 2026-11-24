@@ -65,12 +65,10 @@ jobs:
       - name: Pull the pinned image by digest
         run: docker pull "$TENANT_BOOT_IMAGE"
 
-      # NO_COLOR keeps the verbose log plain for the gate. The gate fails the
-      # job if the live test was skipped, so a skip cannot pass as green.
+      # The JSON report is the evidence: the gate reads the live test's own
+      # status and fails the job unless it passed, so a skip cannot pass as green.
       - name: Boot the rendered stack and expect 200 on /
-        env:
-          NO_COLOR: '1'
         run: |
           set -o pipefail
-          pnpm exec vitest run --reporter=verbose test/tenant-live-boot.test.ts 2>&1 | tee vitest-boot.log
-          bash scripts/assert-live-boot-ran.sh vitest-boot.log
+          pnpm exec vitest run test/tenant-live-boot.test.ts --reporter=default --reporter=json --outputFile.json=vitest-boot.json
+          python3 scripts/assert_live_boot_ran.py vitest-boot.json
