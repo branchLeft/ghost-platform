@@ -257,9 +257,9 @@ jobs:
         run: python3 scripts/tenant_image_gauge.py --digest "$DIGEST" --metrics "$STATE_WORKTREE/tenant-image.prom"
 
       - name: Commit the gauge
-        working-directory: ${{ env.STATE_WORKTREE }}
         run: |
           set -euo pipefail
+          cd "$STATE_WORKTREE"
           git add tenant-image.prom
           if [ "$(git ls-files)" != "tenant-image.prom" ]; then
             echo "::error::the state branch must track only tenant-image.prom"
