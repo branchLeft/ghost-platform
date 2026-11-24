@@ -37,9 +37,10 @@ concurrency:
 
 jobs:
   # Decides whether an input of the image changed. It runs on every event, so the
-  # gate at the end always has a result to read. The image job and its tests run
-  # only when the diff touches a watched path; a change that touches none of them
-  # skips the image job, and the gate still reports success.
+  # gate at the end always has a result to read. The image job is skipped only
+  # when every changed path is one the image never reads (an allow-list in
+  # scripts/ci_skip_decision.py); any other path, an empty diff or a diff that
+  # cannot be read runs it. The gate still reports either way.
   changes:
     name: Decide whether the image inputs changed
     runs-on: ubuntu-latest
@@ -56,24 +57,39 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # A base the runner cannot resolve (a new branch, a forced push) counts as
-      # changed, so the image is built rather than skipped.
-      - name: Diff the event's commits
+      # The table checks every case the decision must get right. It runs here, on
+      # the head, so a change to the decision that breaks a case fails this job.
+      - name: Test the decision table
+        run: python3 -m unittest discover -s scripts -p 'test_ci_skip_decision.py'
+
+      # The decision is the script's, and it is read from the base commit, so a
+      # pull request cannot judge its own change: the copy in its head decides
+      # only when the base has none yet. A base or head the runner cannot resolve
+      # runs the image. The script exits nonzero on a diff it cannot read, which
+      # fails this step and so the gate.
+      - name: Decide whether the image inputs changed
         id: changes
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          image=true
+          decision=run
           if git cat-file -e "${BASE}^{commit}" 2>/dev/null && git cat-file -e "${HEAD}^{commit}" 2>/dev/null; then
-            changed=$(git diff --name-only "${BASE}...${HEAD}")
-            # The watched paths: the Dockerfile and what it copies, the image
-            # tests and the scripts they run, and this file.
-            if ! printf '%s\n' "$changed" | grep -Eq '^(\.github/workflows/build\.yml|Dockerfile|\.dockerignore|docker-entrypoint\.branchleft\.sh|(adapters|services|themes|vendor|scripts|render-core|widgets)/)'; then
-              image=false
+            script="${RUNNER_TEMP}/ci_skip_decision.py"
+            if git cat-file -e "${BASE}:scripts/ci_skip_decision.py" 2>/dev/null; then
+              git show "${BASE}:scripts/ci_skip_decision.py" > "$script"
+            else
+              git show "${HEAD}:scripts/ci_skip_decision.py" > "$script"
             fi
+            git diff --no-renames --name-status -z "${BASE}...${HEAD}" > "${RUNNER_TEMP}/changes.z"
+            decision=$(python3 -I "$script" image < "${RUNNER_TEMP}/changes.z")
           fi
+          case "$decision" in
+            skip) image=false ;;
+            run) image=true ;;
+            *) echo "The decision printed: '${decision}'"; exit 1 ;;
+          esac
           echo "image=${image}" >> "$GITHUB_OUTPUT"
           echo "The image inputs changed: ${image}"
 
