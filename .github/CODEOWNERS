@@ -61,6 +61,7 @@
 /services/release-classifier/test/               @branchLeft/branchleft-admin
 /services/ring-controller/src/                   @branchLeft/branchleft-admin
 /services/ring-controller/test/                  @branchLeft/branchleft-admin
+/services/ring-controller/release/                @branchLeft/branchleft-admin
 /services/broker/src/controlPlaneImagePush.ts    @branchLeft/branchleft-admin
 /services/broker/test/unit/controlPlaneImagePush.test.ts @branchLeft/branchleft-admin
 /infra/scripts/                                  @branchLeft/branchleft-admin

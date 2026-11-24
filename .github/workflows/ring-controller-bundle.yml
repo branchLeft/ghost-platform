@@ -1,0 +1,120 @@
+name: Ring-controller release bundle
+
+# Builds the ring-controller release bundle the ring_controller_host role (shared-infra)
+# pins by digest, attests it, and publishes it as an asset of the ring-controller release.
+# It runs on the same tag as publish-ring-controller.yml and publishes no package: the
+# npm tarball stays that workflow's, and this one owns the bundle.
+#
+# The bundle is what release/pack_bundle.py writes: bin/ring-controller and the compiled
+# controller under lib/, in a gzip tarball whose bytes depend on nothing but the inputs.
+# The job packs twice and compares the two files, so a build that stops being reproducible
+# fails here, before anything is signed.
+#
+# The signing grants sit on this one job, as they do on the npm publish job, and the bundle
+# job alone holds `contents: write`, to create the release. The release is created with
+# --verify-tag and is never replaced: a published digest is pinned elsewhere.
+
+on:
+  push:
+    tags:
+      - 'ring-controller-v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    name: Pack, attest and release the bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        working-directory: services/ring-controller
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: services/ring-controller/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: pnpm
+          cache-dependency-path: services/ring-controller/pnpm-lock.yaml
+
+      - name: Refuse a tag that disagrees with package.json
+        if: github.event_name == 'push'
+        run: |
+          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+          if [ "${GITHUB_REF_NAME}" != "ring-controller-v${PACKAGE_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} names a different version than package.json (${PACKAGE_VERSION}). Nothing released."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Type check, test and test the packer
+        run: |
+          set -euo pipefail
+          pnpm run typecheck
+          pnpm run test:unit
+          python3 -m unittest discover -s release -p 'test_*.py'
+
+      - name: Build the controller and pack the bundle twice
+        id: pack
+        run: |
+          set -euo pipefail
+          pnpm run build
+          VERSION="$(node -p 'require("./package.json").version')"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          for run in a b; do
+            python3 release/pack_bundle.py \
+              --dist dist \
+              --launcher release/bin/ring-controller \
+              --version "${VERSION}" \
+              --out "${RUNNER_TEMP}/bundle-${run}"
+          done
+          name="ring-controller-bundle-${VERSION}.tar.gz"
+          cmp "${RUNNER_TEMP}/bundle-a/${name}" "${RUNNER_TEMP}/bundle-b/${name}"
+          mkdir -p "${RUNNER_TEMP}/release"
+          cp "${RUNNER_TEMP}/bundle-a/${name}" "${RUNNER_TEMP}/bundle-a/${name}.sha256" "${RUNNER_TEMP}/release/"
+
+      - name: Attest the bundle
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release/ring-controller-bundle-${{ steps.pack.outputs.version }}.tar.gz
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.pack.outputs.version }}
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          name="ring-controller-bundle-${VERSION}.tar.gz"
+          cp "${ATTESTATION_BUNDLE}" "${RUNNER_TEMP}/release/${name}.sigstore.json"
+          # `gh release create` fails if the release exists, so a published bundle is
+          # never replaced. `--verify-tag` fails if the tag is not on the remote, and
+          # `--latest=false` keeps this off the repository's latest release.
+          gh release create "ring-controller-v${VERSION}" \
+            "${RUNNER_TEMP}/release/${name}" \
+            "${RUNNER_TEMP}/release/${name}.sha256" \
+            "${RUNNER_TEMP}/release/${name}.sigstore.json" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --latest=false \
+            --title "Ring controller ${VERSION}" \
+            --notes "Ring controller bundle ${VERSION}, the file the ring_controller_host role pins by its SHA-256. Verify the attestation with: gh attestation verify ${name} --repo ${GITHUB_REPOSITORY}"
