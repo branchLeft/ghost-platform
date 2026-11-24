@@ -314,6 +314,24 @@ class StopTests(unittest.TestCase):
         self.assertEqual(decision.action, Action.STOP)
         self.assertEqual(decision.alerts, ("dmarc:missing",))
 
+    def test_a_rejection_cluster_on_any_day_since_the_last_run_stops_the_lane(self) -> None:
+        evidence = with_day(clean_evidence(real=100), TODAY - timedelta(days=2), rejections_5_7=20)
+        decision = decide(evidence, ready_state(3), clock)
+        self.assertEqual(decision.action, Action.STOP)
+        self.assertEqual(decision.state.stop_reasons, ("rejections_5_7_cluster",))
+        self.assertEqual(decision.state.evaluated_through, YESTERDAY)
+
+    def test_a_blocklisting_that_cleared_before_the_run_still_stops_the_lane(self) -> None:
+        evidence = with_day(clean_evidence(real=100), TODAY - timedelta(days=2), blocklisted=True)
+        decision = decide(evidence, ready_state(3), clock)
+        self.assertEqual(decision.action, Action.STOP)
+        self.assertEqual(decision.state.stop_reasons, ("blocklist",))
+
+    def test_a_day_already_read_by_an_earlier_run_does_not_stop_the_lane_again(self) -> None:
+        evidence = with_day(clean_evidence(real=100), TODAY - timedelta(days=2), rejections_5_7=20)
+        state = dataclasses.replace(ready_state(3), evaluated_through=YESTERDAY)
+        self.assertNotEqual(decide(evidence, state, clock).action, Action.STOP)
+
 
 def _stopped(
     *reasons: str, since: timedelta = timedelta(days=2), stage: int = 3
