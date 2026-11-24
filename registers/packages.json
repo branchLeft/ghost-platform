@@ -25,6 +25,10 @@
       "visibility": "public"
     },
     {
+      "name": "odask",
+      "visibility": "private"
+    },
+    {
       "name": "portal-apps",
       "visibility": "public"
     },

@@ -113,6 +113,7 @@
 /services/mailgun-shim/Dockerfile                @branchLeft/branchleft-admin
 /services/mysqld-exporter/Dockerfile               @branchLeft/branchleft-admin
 /services/odask/Dockerfile                       @branchLeft/branchleft-admin
+/scripts/test-odask.sh                           @branchLeft/branchleft-admin
 /services/sweego-webhook-receiver/Dockerfile     @branchLeft/branchleft-admin
 /services/storage-gateway/Dockerfile              @branchLeft/branchleft-admin
 /portal/Dockerfile                               @branchLeft/branchleft-admin
@@ -244,7 +245,6 @@
 /scripts/test-demo-router-dir-permissions.sh
 /scripts/test-drain-flag-dir-permissions.sh
 /scripts/test-export-bundler.sh
-/scripts/test-odask.sh
 /scripts/mail-spool-proof/dnsprobe.js
 /scripts/mail-spool-proof/drainack.js
 /scripts/mail-spool-proof/drainroute.py

@@ -35,6 +35,7 @@ const PUBLISHERS = {
   'percona-image.yml': 'ghcr.io/branchleft/percona-server',
   'mysqld-exporter-image.yml': 'ghcr.io/branchleft/mysqld-exporter',
   'mailgun-shim-image.yml': 'ghcr.io/branchleft/mailgun-shim',
+  'odask-image.yml': 'ghcr.io/branchleft/odask',
 };
 
 // Workflows that push but are not covered here, and why. A workflow that pushes
@@ -347,14 +348,6 @@ test('every workflow that pushes an image is covered here or named with a reason
   }
   for (const file of Object.keys(NOT_COVERED)) {
     assert.ok(fs.existsSync(path.join(WORKFLOWS, file)), `${file} is listed but does not exist`);
-  }
-});
-
-test('the build-only image workflows push nothing, so they need no scan', () => {
-  for (const file of ['odask-image.yml']) {
-    const text = uncommented(read(file));
-    assert.doesNotMatch(text, PUSHES, `${file} pushes an image`);
-    assert.doesNotMatch(text, /packages:\s*write|id-token/, `${file} holds a publish credential`);
   }
 });
 
