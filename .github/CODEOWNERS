@@ -56,9 +56,7 @@
 /scripts/assert-*.py                               @branchLeft/branchleft-admin
 /scripts/assert-*.js                             @branchLeft/branchleft-admin
 /scripts/verify-image-attestation.sh             @branchLeft/branchleft-admin
-/scripts/test-verify-image-attestation.sh        @branchLeft/branchleft-admin
 /scripts/test-odask.sh                           @branchLeft/branchleft-admin
-/scripts/test-node-env-gate.sh                   @branchLeft/branchleft-admin
 /scripts/digest-line-scope.js                    @branchLeft/branchleft-admin
 /scripts/demo-edge-pins.mjs                       @branchLeft/branchleft-admin
 # Run by the gate set itself.
