@@ -155,6 +155,17 @@ function required(name: keyof typeof SECRET_ENV_KEYS, secretsFilePath: string): 
   return `\${${SECRET_ENV_KEYS[name]}:?set ${SECRET_ENV_KEYS[name]} in ${secretsFilePath}}`;
 }
 
+/** `required()` for a key that is not one of `SECRET_ENV_KEYS`: a descriptor's own `mail.bulk.credentialRef`. */
+function requiredKey(key: string, secretsFilePath: string): string {
+  return `\${${key}:?set ${key} in ${secretsFilePath}}`;
+}
+
+/** The secrets-file key a descriptor's bulk-mail credential is read from: its
+ * own `mail.bulk.credentialRef`, or the spool's key when it names no endpoint. */
+export function bulkCredentialKeyOf(mail: Pick<MailSpec, 'bulk'>): string {
+  return mail.bulk?.credentialRef ?? SECRET_ENV_KEYS.bulkEmailApiKey;
+}
+
 // Compose's own `${VAR}`/`$VAR` interpolation — see the module doc comment.
 // `$$` is Compose's escape for a literal `$`.
 function escapeComposeDollar(value: string): string {
@@ -445,8 +456,10 @@ function bulkMailEnvironment(
     mail__from: renderSendingAddress(mail.identity, zones),
   };
   if (mail.enabled) {
-    env.bulkEmail__mailgun__baseUrl = MAIL_SPOOL_BASE_URL;
-    env.bulkEmail__mailgun__domain = credentialDomainOf(mail.identity, zones, uid);
+    // A descriptor that names no bulk endpoint keeps the host's own spool.
+    env.bulkEmail__mailgun__baseUrl = mail.bulk?.endpoint ?? MAIL_SPOOL_BASE_URL;
+    env.bulkEmail__mailgun__domain =
+      mail.bulk?.domain ?? credentialDomainOf(mail.identity, zones, uid);
   }
   return env;
 }
@@ -687,7 +700,10 @@ export function tenantEnvironment(
     escaped.mail__options__auth__pass = required('bulkEmailApiKey', secretsFilePath);
   }
   if (descriptor.mail.enabled) {
-    escaped.bulkEmail__mailgun__apiKey = required('bulkEmailApiKey', secretsFilePath);
+    escaped.bulkEmail__mailgun__apiKey = requiredKey(
+      bulkCredentialKeyOf(descriptor.mail),
+      secretsFilePath
+    );
   }
 
   return escaped;
