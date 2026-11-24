@@ -122,10 +122,10 @@ export class InvalidDemoRequestError extends Error {
   }
 }
 
-/** The address already has a request: one request per verified address, enforced by the table. */
+/** The address already has an open request: one open request per verified address, enforced by the table. */
 export class DemoRequestExistsError extends Error {
   constructor() {
-    super('a demo request already exists for this verified address');
+    super('an open demo request already exists for this verified address');
     this.name = 'DemoRequestExistsError';
   }
 }

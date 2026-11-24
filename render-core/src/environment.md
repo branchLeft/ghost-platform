@@ -146,9 +146,12 @@ per host, serving both SMTP and the Mailgun-shaped API. Rendered from
 `mail.enabled` and the sending identity alone — never from `transport.kind`
 — so a demo (whose transactional path may be `queue`, carrying no host at
 all) still gets a bulk path pointed at the spool; the two paths share a
-spool, not a `TransportSpec` variant. The base URL is `spool.ts`'s
-`MAIL_SPOOL_BASE_URL`, the spool's own service name and port, never a
-caller-supplied address.
+spool, not a `TransportSpec` variant. Absent `mail.bulk`, the base URL is
+`spool.ts`'s `MAIL_SPOOL_BASE_URL`, the spool's own service name and port, and
+the credential is `GHOST_BULK_EMAIL_API_KEY`. A paying tenant with an SMTP
+transport may name `mail.bulk` instead: its `endpoint` and `domain` render as
+the base URL and domain, and its `credentialRef` names the secrets-file key
+the API key reference reads. See mail.md#bulk-endpoint.
 
 ## Transport environment
 
@@ -183,11 +186,14 @@ Member mail is addressed through a Ghost *setting*
 
 ## Social web lock
 
-`hostSettings__limits__limitSocialWeb__disabled` is `true` for every kind and
-every cap, so Ghost locks the ActivityPub setting and the admin's Network tab
-is absent. It is unconditional, unlike the member and staff caps, which
-render only when set. `settings.ts` also turns `social_web` off, because a
-lock does not undo what an existing tenant already has.
+`hostSettings__limits__limitSocialWeb__disabled` is `true` unless the
+descriptor's `activitypub` field says `on`. `federationEnvironment()` owns the
+key: off (or absent) renders it, so Ghost locks the ActivityPub setting and the
+admin's Network tab is absent; `on` omits the key, so Ghost keeps its own
+default. It is unconditional, unlike the member and staff caps, which render
+only when set. `settings.ts` sets `social_web` to the same switch, because a
+lock does not undo what an existing tenant already has. A demo may never say
+`on`: `validate()` refuses it, so no demo renders with federation.
 
 ## Stripe connect limit
 

@@ -27,12 +27,11 @@ the Admin API can write — so they render as Compose environment
 (`environment.ts#hostLimitsEnvironment`) instead; putting them in this
 artefact cannot take effect against Ghost's real source.
 
-**`social_web` is always `false`.** The admin's Network tab is ActivityPub's
-surface and no federation service backs it yet. The setting alone does not
-hide the tab, and a lock alone does not remove what an existing tenant
-already has, so `environment.ts` locks the feature
-(`hostSettings__limits__limitSocialWeb__disabled`) and this artefact turns
-the setting off. Lifting the hide means removing both.
+**`social_web` follows the descriptor's `activitypub` field.** It is `false`
+unless the field says `on` (`environment.md#social-web-lock`), the same switch
+that omits the lock key from the environment. The setting alone does not hide
+the tab, and a lock alone does not remove what an existing tenant already has,
+so both render from one switch.
 
 **`members_support_address` is the one Ghost actually reads before it sends
 a member a magic link — `mail__from` (`environment.ts`) is not.** A sender

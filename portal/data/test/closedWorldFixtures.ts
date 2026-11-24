@@ -908,18 +908,16 @@ $$`,
   },
   {
     id: 'M21',
-    title: 'the unique address constraint dropped from the requests',
-    apply: [
-      [P, 'ALTER TABLE portal.demo_request DROP CONSTRAINT demo_request_verified_address_unique'],
-    ],
+    title: 'the one open claim per address index dropped from the requests',
+    apply: [[P, 'DROP INDEX portal.demo_request_one_open_claim_per_address']],
     undo: [
       [
         P,
-        'ALTER TABLE portal.demo_request ADD CONSTRAINT demo_request_verified_address_unique UNIQUE (verified_address)',
+        'CREATE UNIQUE INDEX demo_request_one_open_claim_per_address ON portal.demo_request USING btree (verified_address) WHERE claim_open',
       ],
     ],
     expect:
-      /missing M21: portal.demo_request constraint demo_request_verified_address_unique UNIQUE/,
+      /missing M21: portal\.demo_request index portal\.demo_request_one_open_claim_per_address CREATE UNIQUE INDEX/,
   },
 ];
 

@@ -86,7 +86,7 @@ class Sidecar:
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port: int = self.server.server_address[1]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.01), daemon=True)
 
     def __enter__(self) -> Sidecar:
         self.thread.start()
@@ -135,7 +135,7 @@ class Rig:
         (root / "docker.json").write_text(
             json.dumps({"ps": ps or {"stdout": CONTAINER + "\n"}, "exec": run or {"stderr": "health: alpha-site: recorded read\n"}})
         )
-        self.cfg = mod.Config(docker=str(stand_in), fetch_timeout_s=1.0, list_timeout_s=10.0, exec_timeout_s=10.0)
+        self.cfg = mod.Config(docker=str(stand_in), fetch_timeout_s=0.5, list_timeout_s=10.0, exec_timeout_s=10.0)
 
     def calls(self) -> list[dict[str, Any]]:
         log = self.base / "calls.log"
@@ -197,8 +197,8 @@ def check_a_colour_that_cannot_be_read_is_reported_as_null(mod: types.ModuleType
             "answers 404": stack.enter_context(Sidecar(status=404, body=HEALTHY.encode())).url,
             "is not at the metrics path": stack.enter_context(Sidecar(body=HEALTHY.encode(), path="/other")).url,
             "sends more than the limit": stack.enter_context(Sidecar(body=b"a" * (mod.MAX_BODY_BYTES + 1))).url,
-            "is silent for longer than the limit": stack.enter_context(Sidecar(body=HEALTHY.encode(), delay_s=2.0)).url,
-            "drips its answer past the limit": stack.enter_context(Sidecar(body=b"abcdefgh", drip_s=0.4)).url,
+            "is silent for longer than the limit": stack.enter_context(Sidecar(body=HEALTHY.encode(), delay_s=1.0)).url,
+            "drips its answer past the limit": stack.enter_context(Sidecar(body=b"abcdefgh", drip_s=0.1)).url,
             "sends text that is not UTF-8": stack.enter_context(Sidecar(body=b"\xff\xfe")).url,
             "is not listening": closed_url(),
         }

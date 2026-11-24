@@ -1,6 +1,12 @@
 export { bindTenant, TenantScope } from './scope.js';
 export { TenantDb, TenantNotRegisteredError, type TenantRegistration } from './session.js';
 export { TenantBindingChangedError } from './binding.js';
+export {
+  FEDERATION_FIELD,
+  FederationNotAvailableError,
+  InvalidFederationFormError,
+  parseFederationForm,
+} from './federation.js';
 export { InvalidTenantIdError, type TenantId } from '../tenantId.js';
 export {
   InvalidTenantKindError,

@@ -82,6 +82,7 @@ import { parseTenantId } from '../tenantId.js';
 import { assertBindingIntact } from './binding.js';
 import { parseTenantKind, type TenantKind } from '../tenantKind.js';
 import { bindTenant, type TenantScope } from './scope.js';
+import { FederationNotAvailableError } from './federation.js';
 
 /** The key that lets one tenant hold a connected domain at a time. */
 const CONNECTED_FQDN_KEY = 'connected_domain_pkey';
@@ -479,6 +480,41 @@ export class TenantDb {
             },
           });
       }
+    });
+  }
+
+  /** The bound tenant's federation switch as the register holds it; off unless the tenant has turned it on. */
+  async ownFederation(scope: TenantScope): Promise<boolean> {
+    const rows = await this.run(scope, (tx) => tx.select().from(tenantRegister));
+    const row = rows[0];
+    if (!row) throw new TenantNotRegisteredError();
+    return row.federationEnabled;
+  }
+
+  /**
+   * Sets the bound tenant's federation switch on its own register row. The
+   * kind is read in the same transaction: a demo slot, or a row whose kind is
+   * not exactly a real tenant, is refused with `FederationNotAvailableError`
+   * and nothing is written. The database's own check refuses it again.
+   */
+  async saveFederation(
+    scope: TenantScope,
+    request: { enabled: boolean; updatedBy: string },
+    now: Date
+  ): Promise<void> {
+    await this.run(scope, async (tx) => {
+      const rows = await tx.select().from(tenantRegister);
+      const row = rows[0];
+      if (!row) throw new TenantNotRegisteredError();
+      if (parseTenantKind(row.kind) !== 'REAL') throw new FederationNotAvailableError();
+      await tx
+        .update(tenantRegister)
+        .set({
+          federationEnabled: request.enabled,
+          federationUpdatedBy: request.updatedBy,
+          federationUpdatedAt: now,
+        })
+        .where(eq(tenantRegister.tenantId, scope.tenantId));
     });
   }
 
