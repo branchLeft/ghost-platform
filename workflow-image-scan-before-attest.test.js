@@ -197,7 +197,14 @@ export function problems(source, { file, image }) {
     found.push('the workflow carries its own copy of the attest or verify step');
   }
 
-  // Every reference to the shared repository is the one pin.
+  found.push(...sharedPinProblems(text));
+  return found;
+}
+
+// Every reference to the shared repository is the one pin. Shared by the
+// single-image and the two-image checkers.
+function sharedPinProblems(text) {
+  const found = [];
   for (const m of text.matchAll(/uses: (branchLeft\/github-workflows\/\S+)(.*)$/gm)) {
     if (`${m[1]}${m[2]}` !== `${m[1]} # v1.2.7` || !m[1].endsWith(`@${PIN}`)) {
       found.push(`github-workflows reference is not pinned to v1.2.7: ${m[0]}`);
@@ -342,6 +349,7 @@ export function pairProblems(source, { file, images }) {
       found.push(`attest-${s} reads the ${other} image's outputs`);
     }
   });
+  found.push(...sharedPinProblems(text));
   return found;
 }
 
@@ -409,6 +417,11 @@ function pairedTests(file, images) {
         [
           swap(real, `      IMAGE: ${image}\n`, `      IMAGE: ${images[1 - i]}\n`),
           `attest-${s} does not name ${image}`,
+        ],
+        // The shared attest is floated to a branch rather than the pin.
+        [
+          swap(real, `attest-and-verify-image@${PIN}`, 'attest-and-verify-image@main'),
+          'github-workflows reference is not pinned to v1.2.7',
         ]
       );
     });
