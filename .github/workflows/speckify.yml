@@ -135,11 +135,11 @@ jobs:
       - name: The committed generated sources are what Speckify generates
         run: python3 scripts/assert-contracts-generated.py .speckify/out
 
-      # Only the broker's package is published here. The provisioning API is
-      # built and drift-checked above like the broker's, but nothing consumes it
-      # from the registry yet: the portal links its generated sources from this
-      # repository, and the real service it describes does not exist. Publishing
-      # it is its own change, made when something installs it.
+      # Every contract in speckify.yaml is published here: `speckify publish` at
+      # v0.1.2 has no flag to pick one. That includes the provisioning API, so
+      # each push to main publishes @branchleft/ghost-platform-provisioning-api
+      # as well as the broker package. Nothing consumes that package yet, and an
+      # agent cannot unpublish it. Narrowing this to the broker is a follow-up.
       #
       # `speckify publish` packs each package, attests the tarballs, checks each
       # tarball's sha-256 against the attestation and publishes those same files.
