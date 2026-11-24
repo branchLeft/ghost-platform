@@ -34,7 +34,14 @@ import {
   validateMediaFolder,
   validateMediaShard,
 } from './media.js';
-import { MAIL_ROUTES, MAX_SWEEGO_ALLOWANCE, mailRouteOf } from './mail.js';
+import {
+  BULK_CREDENTIAL_REF_PATTERN,
+  BULK_DOMAIN_PATTERN,
+  MAIL_ROUTES,
+  MAX_BULK_DOMAIN_LENGTH,
+  MAX_SWEEGO_ALLOWANCE,
+  mailRouteOf,
+} from './mail.js';
 
 export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3';
 
@@ -206,6 +213,7 @@ const DESCRIPTOR_KEYS = [
   'breakGlass',
   'expiresAt',
   'analytics',
+  'activitypub',
 ] as const;
 /** `DESCRIPTOR_KEYS` without `ownerEmail`: see validateTenantStack. */
 const STACK_DESCRIPTOR_KEYS = DESCRIPTOR_KEYS.filter((key) => key !== 'ownerEmail');
@@ -225,7 +233,8 @@ const MEDIA_GATEWAY_KEYS = [
 ] as const;
 const TRANSPORT_QUEUE_KEYS = ['kind', 'path'] as const;
 const TRANSPORT_SMTP_KEYS = ['kind', 'host', 'port', 'user'] as const;
-const MAIL_KEYS = ['enabled', 'ceiling', 'estateCeiling', 'identity', 'route'] as const;
+const MAIL_KEYS = ['enabled', 'ceiling', 'estateCeiling', 'identity', 'route', 'bulk'] as const;
+const MAIL_BULK_KEYS = ['endpoint', 'domain', 'credentialRef'] as const;
 const MAIL_ROUTE_KEYS = ['primary', 'sweegoAllowance'] as const;
 const SENDING_IDENTITY_DEMO_KEYS = ['kind', 'localPart'] as const;
 const SENDING_IDENTITY_TENANT_KEYS = ['kind', 'domain', 'dkimSelector'] as const;
@@ -459,6 +468,13 @@ function assertShape(descriptor: TenantStackDescriptor, owner: OwnerEmailPlaceme
       );
     }
     assertSweegoAllowance(descriptor.mail.route);
+  }
+  if (descriptor.mail.bulk !== undefined) {
+    assertObject(descriptor.mail.bulk, 'mail.bulk');
+    assertNoUnknownKeys(descriptor.mail.bulk, MAIL_BULK_KEYS, 'mail.bulk');
+    assertString(descriptor.mail.bulk.endpoint, 'mail.bulk.endpoint');
+    assertString(descriptor.mail.bulk.domain, 'mail.bulk.domain');
+    assertString(descriptor.mail.bulk.credentialRef, 'mail.bulk.credentialRef');
   }
 
   if (descriptor.hostname.kind === 'ours') {
@@ -730,6 +746,71 @@ function validateTransport(transport: TenantDescriptor['transport']): void {
   // string reads specially" reasoning applies unchanged.
   assertValidHost(transport.host, 'transport.host');
   validatePort(transport.port, 'transport.port');
+}
+
+/**
+ * `mail.bulk`: a provider-neutral bulk-mail endpoint. It is a paying tenant's
+ * field, it needs mail on, and it needs an SMTP transport: a `queue` transport
+ * sends the whole of a tenant's mail through the host's own spool, and the
+ * spool's credential is the one bulk key, so a second endpoint would split one
+ * path across two. See mail.md#bulk-endpoint.
+ */
+function validateBulkMail(descriptor: TenantStackDescriptor): void {
+  const bulk = descriptor.mail.bulk;
+  if (bulk === undefined) {
+    return;
+  }
+  if (descriptor.kind !== 'tenant') {
+    throw new TierMismatchError(
+      `kind "${descriptor.kind}" must not carry mail.bulk; only a paying tenant names a bulk-mail endpoint.`
+    );
+  }
+  if (!descriptor.mail.enabled) {
+    throw new FieldValidationError(
+      'mail.bulk',
+      'mail.bulk requires mail.enabled to be true; with mail off no bulk key is rendered.'
+    );
+  }
+  if (descriptor.transport.kind !== 'smtp') {
+    throw new FieldValidationError(
+      'mail.bulk',
+      `mail.bulk requires transport.kind "smtp", got "${descriptor.transport.kind}". A "queue" ` +
+        `transport sends all mail through the host's own mail spool.`
+    );
+  }
+  assertBulkEndpoint(bulk.endpoint);
+  if (bulk.domain.length > MAX_BULK_DOMAIN_LENGTH || !BULK_DOMAIN_PATTERN.test(bulk.domain)) {
+    throw new FieldValidationError(
+      'mail.bulk.domain',
+      `mail.bulk.domain must be 1 to ${MAX_BULK_DOMAIN_LENGTH} characters: ` +
+        `letters, digits, ".", "_" and "-", starting with a letter or digit.`
+    );
+  }
+  if (!BULK_CREDENTIAL_REF_PATTERN.test(bulk.credentialRef)) {
+    throw new FieldValidationError(
+      'mail.bulk.credentialRef',
+      `mail.bulk.credentialRef must be a secrets-file key (value withheld): ` +
+        `"GHOST_BULK_" then 1 to 48 upper-case letters, digits or "_".`
+    );
+  }
+}
+
+/** An https origin and nothing else: no userinfo, path, query or fragment. */
+function assertBulkEndpoint(endpoint: string): void {
+  let origin: string;
+  try {
+    const url = new URL(endpoint);
+    origin = url.protocol === 'https:' ? url.origin : '';
+  } catch {
+    origin = '';
+  }
+  if (origin === '' || origin !== endpoint) {
+    throw new FieldValidationError(
+      'mail.bulk.endpoint',
+      `mail.bulk.endpoint must be an https origin (value withheld): scheme and host (and an ` +
+        `optional port) with no userinfo, path, query or fragment, and no trailing "/".`
+    );
+  }
 }
 
 // Bounded, single-quantifier groups either side of the boundary character —
@@ -1603,6 +1684,20 @@ function validateAnalytics(descriptor: TenantStackDescriptor): void {
   }
 }
 
+/**
+ * Federation is off unless the descriptor says `on`. A demo may never say
+ * `on`: no demo renders with the Network setting unlocked (environment.md#social-web-lock).
+ */
+function validateActivityPub(descriptor: TenantStackDescriptor): void {
+  const activitypub = descriptor.activitypub;
+  if (activitypub === undefined || activitypub.kind === 'off') {
+    return;
+  }
+  if (descriptor.kind === 'demo') {
+    throw new FieldValidationError('activitypub', 'a demo descriptor may not turn federation on.');
+  }
+}
+
 function validateFields(
   descriptor: TenantStackDescriptor,
   zones: ZoneConfig,
@@ -1654,9 +1749,11 @@ function validateFields(
   validateBackup(descriptor.backup);
   validateTransport(descriptor.transport);
   validateMailIdentity(descriptor.mail, zones, descriptor.slug, options.claimantRepo);
+  validateBulkMail(descriptor);
   validateHostname(descriptor.hostname, zones, descriptor.slug, options.claimantRepo);
   validateGate(descriptor.gate);
   validateAnalytics(descriptor);
+  validateActivityPub(descriptor);
   validateCodeInjection(descriptor.codeInjection);
   validateBreakGlass(descriptor.breakGlass);
   if (descriptor.expiresAt !== null) {

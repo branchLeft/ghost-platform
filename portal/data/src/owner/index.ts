@@ -33,6 +33,7 @@ import {
   documentVersion,
   healthReading,
   professionalEnquiry,
+  account,
   supportAccessReading,
   supportAccessRequest,
   tenantBilling,
@@ -141,10 +142,21 @@ export class OwnerDb {
     const tenantName =
       registration.tenantName === undefined ? null : normaliseTenantName(registration.tenantName);
     try {
+      // The account and the register row go in one transaction: a refused name
+      // leaves no account behind to block a retry under the same organisation.
       await this.run(async (tx) => {
-        await tx
-          .insert(tenantRegister)
-          .values({ tenantId, zitadelOrgId: registration.zitadelOrgId, kind, tenantName });
+        const [created] = await tx
+          .insert(account)
+          .values({ identityOrgId: registration.zitadelOrgId })
+          .returning({ accountId: account.accountId });
+        if (created === undefined) throw new Error('the account insert returned no row');
+        await tx.insert(tenantRegister).values({
+          tenantId,
+          zitadelOrgId: registration.zitadelOrgId,
+          kind,
+          tenantName,
+          accountId: created.accountId,
+        });
       });
     } catch (error) {
       const refused = readDatabaseError(error);

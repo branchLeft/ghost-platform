@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { connect, type PortalDb } from '../src/db.js';
 import { migrateSchema } from '../src/migrate.js';
-import { tenantRegister } from '../src/schema.js';
+import { account, tenantRegister } from '../src/schema.js';
 import { connectionOptions, provisionPortal } from '../provision/provisionPortal.js';
 import { scramVerifier } from '../provision/scram.js';
 
@@ -41,6 +41,16 @@ export interface Fixture {
   /** A login that holds both roles and can itself bypass row-level policies. */
   dual: pg.Pool;
   close(): Promise<void>;
+}
+
+/** An account for an identity organisation, as a registration creates one; returns its id. */
+export async function newAccount(db: PortalDb, identityOrgId: string): Promise<string> {
+  const [row] = await db
+    .insert(account)
+    .values({ identityOrgId })
+    .returning({ accountId: account.accountId });
+  if (row === undefined) throw new Error('the account insert returned no row');
+  return row.accountId;
 }
 
 /** The deepest message in an error's cause chain: the database's own, under the ORM's wrapper. */
@@ -161,10 +171,12 @@ export async function createFixture(): Promise<Fixture> {
   );
 
   const adminDb = connect(admin);
+  const accountA = await newAccount(adminDb, ORG_A);
+  const accountB = await newAccount(adminDb, ORG_B);
   await adminDb.insert(tenantRegister).values([
     // Tenant A is a real tenant and tenant B is a demo slot.
-    { tenantId: TENANT_A, zitadelOrgId: ORG_A, kind: 'REAL' },
-    { tenantId: TENANT_B, zitadelOrgId: ORG_B, kind: 'DEMO' },
+    { tenantId: TENANT_A, zitadelOrgId: ORG_A, kind: 'REAL', accountId: accountA },
+    { tenantId: TENANT_B, zitadelOrgId: ORG_B, kind: 'DEMO', accountId: accountB },
   ]);
 
   const tenant = testPool(database, TENANT_LOGIN, LOGIN_PASSWORD, 1);

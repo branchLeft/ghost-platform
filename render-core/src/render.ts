@@ -21,7 +21,12 @@ import {
   type PaymentsCsp,
   type ThemeCsp,
 } from './edge.js';
-import { tenantEnvironment, SECRET_ENV_KEYS, type WidgetSource } from './environment.js';
+import {
+  bulkCredentialKeyOf,
+  tenantEnvironment,
+  SECRET_ENV_KEYS,
+  type WidgetSource,
+} from './environment.js';
 import { renderIdentity } from './identity.js';
 import {
   imageEnvPath,
@@ -64,7 +69,7 @@ function requiredSecretKeys(descriptor: TenantStackDescriptor): string[] {
     keys.push(SECRET_ENV_KEYS.mailPassword);
   }
   if (descriptor.mail.enabled) {
-    keys.push(SECRET_ENV_KEYS.bulkEmailApiKey);
+    keys.push(bulkCredentialKeyOf(descriptor.mail));
   }
   // A demo's owner address is the broker's; a paying tenant's arrives here.
   // See descriptor.md#tenant-stack-descriptor.

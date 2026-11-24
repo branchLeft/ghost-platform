@@ -89,3 +89,33 @@ place that default lives.
   (`mailSpoolNeedsDrainOutcomes`; see spool.md#the-outcomes-route).
 - **No credential or host.** The allowance is a plain number. The plan size
   and the account-wide cap are not descriptor fields.
+
+## Bulk endpoint
+
+`mail.bulk` says where Ghost's bulk-mail client submits newsletters:
+`{ endpoint, domain, credentialRef }`. It is optional, and an absent `bulk`
+means the host's own mail spool, so every descriptor written before the field
+existed renders exactly what it always did (golden: `test/bulkMail.test.ts`).
+No provider is named anywhere in the key names, the rendered config or the code.
+
+- **`endpoint`** is an https origin: scheme, host and an optional port, with no
+  userinfo, path, query, fragment or trailing slash. It renders as
+  `bulkEmail__mailgun__baseUrl`. The key names stay as Ghost reads them.
+- **`domain`** is the account identifier Ghost addresses on that endpoint, and
+  renders as `bulkEmail__mailgun__domain`. Absent `bulk`, it is the spool's
+  credential domain (`credentialDomainOf`), as before.
+- **`credentialRef`** is the *name* of the secrets-file key that holds the
+  credential, `GHOST_BULK_` then 1 to 48 upper-case letters, digits or `_`. The
+  key renders as the usual `${NAME:?set NAME in <secrets file>}` reference in
+  `bulkEmail__mailgun__apiKey`, and `renderSecretsTemplate` lists it in place of
+  `GHOST_BULK_EMAIL_API_KEY`. The value never appears in the descriptor, in any
+  artefact, or in a test.
+- **A paying tenant with an SMTP transport only.** A demo is refused (a tier
+  mismatch), and so are `mail.enabled: false` (no bulk key is rendered) and a
+  `queue` transport, which sends all of a tenant's mail through the spool and
+  uses the spool's one key; a second endpoint would split one path across two.
+- **The transactional path is separate.** `transport` (`smtp`) already names
+  the host, port and login for member mail, with the password as
+  `GHOST_MAIL_PASSWORD`. `bulk` is the same idea for newsletters.
+- **Strict.** The object takes `endpoint`, `domain` and `credentialRef` and
+  nothing else; a stray key such as a literal credential is refused.

@@ -65,3 +65,12 @@ export function renderSendingAddress(
   const localPart = identity.kind === 'demo' ? identity.localPart : TENANT_SENDING_LOCAL_PART;
   return `${localPart}@${sendingDomainOf(identity, zones)}`;
 }
+
+/** The shape a `mail.bulk.credentialRef` must take: a secrets-file key in the bulk-mail family. */
+export const BULK_CREDENTIAL_REF_PATTERN = /^GHOST_BULK_[A-Z0-9_]{1,48}$/;
+
+/** The most characters a `mail.bulk.domain` may be. */
+export const MAX_BULK_DOMAIN_LENGTH = 253;
+
+/** The characters a `mail.bulk.domain` may use: nothing a URL path or a shell reads specially. */
+export const BULK_DOMAIN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;

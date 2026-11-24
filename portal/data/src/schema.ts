@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  AnyPgColumn,
   boolean,
   check,
   integer,
@@ -72,11 +73,26 @@ export const tenantRegister = portal
       createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
       kind: text('kind').notNull(),
       tenantName: text('tenant_name'),
+      // The customer account this tenant belongs to. Every tenant has one; the
+      // account row is the only place its identity organisation is named.
+      accountId: uuid('account_id')
+        .notNull()
+        .references((): AnyPgColumn => account.accountId),
+      // The tenant's ActivityPub federation switch. Off by default and for every
+      // row that existed before this column; the who and when are the last change.
+      federationEnabled: boolean('federation_enabled').notNull().default(false),
+      federationUpdatedBy: text('federation_updated_by'),
+      federationUpdatedAt: timestamp('federation_updated_at', { withTimezone: true }),
     },
     (table) => [
       check(
         'tenant_register_kind_known',
         sql`${table.kind} IN (${sql.raw(sqlList(TENANT_KINDS))})`
+      ),
+      // A demo slot can never have federation on, whatever a statement says.
+      check(
+        'tenant_register_federation_demo_off',
+        sql`NOT (${table.federationEnabled} AND ${table.kind} = 'DEMO')`
       ),
       // The name a customer signed up under, in its stored (normalised) form.
       // Null for a demo slot. Unique, so a second sign-up under a taken name is
@@ -98,6 +114,32 @@ export const tenantRegister = portal
         for: 'select',
         to: portalTenant,
         using: sql`${table.zitadelOrgId} = public.bound_organisation()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
+ * A customer account: the one identity-provider organisation a customer logs
+ * in with, held once, and the tenants that belong to it. Each existing tenant
+ * was backfilled into an account of its own. A tenant reads only its own
+ * account, through its own register row; the owner role bypasses row security
+ * by attribute, and nothing a tenant does can write an account.
+ */
+export const account = portal
+  .table(
+    'account',
+    {
+      accountId: uuid('account_id').primaryKey().defaultRandom(),
+      identityOrgId: text('identity_org_id').notNull().unique(),
+      createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    },
+    (table) => [
+      pgPolicy('tenant_account', {
+        as: 'permissive',
+        for: 'select',
+        to: portalTenant,
+        using: sql`${table.accountId} = (SELECT ${tenantRegister.accountId} FROM ${tenantRegister} WHERE ${tenantRegister.tenantId} = public.bound_tenant())`,
       }),
     ]
   )
