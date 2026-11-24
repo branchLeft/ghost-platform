@@ -71,7 +71,14 @@ bridge gateway, needs an explicit accept in `BRANCHLEFT-DEMO-INPUT`.
   the nftables firewall backend (`firewall-backend` in `/etc/docker/daemon.json`,
   or `DOCKER_FIREWALL_BACKEND` in its environment), because Docker would then keep
   its rules in nftables and the iptables tables this policy writes would guard
-  nothing. It decides from Docker's setting, never from the iptables binary's
+  nothing. The setting is read from every place it can be given: `daemon.json`
+  and any `--config-file` the unit names, the program's environment, and, where
+  systemd runs, the `docker.service` unit as systemd shows it (`--firewall-backend`
+  or `DOCKER_FIREWALL_BACKEND` in its command line or environment, its
+  `EnvironmentFile`, and any drop-in). Where systemd is absent, the running
+  dockerd processes are read instead. A unit systemd cannot show as loaded, or
+  one with a pending daemon-reload, is a refusal: the program cannot tell which
+  backend dockerd runs with. It decides from Docker's setting, never from the iptables binary's
   variant: Debian 13's iptables 1.8.11 prints `(nf_tables)` while Docker still
   writes iptables rules. An unreadable `daemon.json` is a refusal, not a guess.
   No other chain is a safe substitute, because the order of `FORWARD` is Docker's
