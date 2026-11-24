@@ -195,6 +195,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0015_tenant_erasure_request',
       'applied migration 0016_demo_extension_request',
       'applied migration 0017_professional_enquiry',
+      'applied migration 0018_federation_setting',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',

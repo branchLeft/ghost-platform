@@ -2,6 +2,15 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
+## 0.9.0
+
+- **Additive:** an optional `activitypub` field on the tenant descriptor, `{ kind: 'off' } | { kind: 'on' }`.
+  An absent field means off, as it does for `analytics`, and renders exactly what 0.8.0 rendered (the
+  golden fixtures do not change). `on` unlocks Ghost's ActivityPub setting: `environment.ts` omits
+  `hostSettings__limits__limitSocialWeb__disabled` and `settings.ts` sets `social_web` true. `validate()`
+  refuses `on` for a demo. `federationEnvironment()` and `federationOn()` are the single definition
+  reconcilers share. See `environment.md#social-web-lock`.
+
 ## 0.8.0
 
 - **Additive:** a named sending-domain exception for tenant zero. The owned-domain refusal now allows

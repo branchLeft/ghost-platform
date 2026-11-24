@@ -162,6 +162,7 @@ const TENANT_BILLING = '0014_tenant_billing';
 const DEMO_EXTENSION = '0016_demo_extension_request';
 const TENANT_ERASURE = '0015_tenant_erasure_request';
 const PROFESSIONAL_ENQUIRY = '0017_professional_enquiry';
+const FEDERATION = '0018_federation_setting';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -244,7 +245,8 @@ export function manifest(major: number, database: string): readonly ManifestObje
     // TenantDb.ownRegistration, ownKind and scopeForOrganisation read; OwnerDb
     // registerTenant inserts, listTenants and listHealth read. Nothing
     // updates or deletes a registration, so a tenant cannot change its own
-    // kind (the tenant role holds SELECT alone).
+    // kind: the tenant role holds SELECT on the table and, from the federation
+    // migration, UPDATE on the three federation columns alone (TenantDb.saveFederation).
     {
       kind: 'table',
       identity: 'portal.tenant_register',
@@ -252,6 +254,18 @@ export function manifest(major: number, database: string): readonly ManifestObje
       grants: [
         { grantee: 'tenantRole', privileges: ['SELECT'] },
         { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT'] },
+      ],
+      added: [
+        {
+          since: FEDERATION,
+          grants: [
+            {
+              grantee: 'tenantRole',
+              privileges: ['UPDATE'],
+              columns: ['federation_enabled', 'federation_updated_by', 'federation_updated_at'],
+            },
+          ],
+        },
       ],
     },
     // TenantDb.ownHealth reads; OwnerDb.recordReading inserts and, through
@@ -827,6 +841,17 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
             "'^[a-z][a-z0-9-]{1,24}[a-z0-9]$'::text))",
           'index portal.tenant_register_tenant_name_unique CREATE UNIQUE INDEX ' +
             'tenant_register_tenant_name_unique ON portal.tenant_register USING btree (tenant_name)',
+        ],
+      },
+      // The federation switch: off by default, and never on for a demo slot.
+      {
+        since: FEDERATION,
+        lines: [
+          `column federation_enabled boolean notnull=true ${PLAIN}`,
+          'default federation_enabled false',
+          `column federation_updated_by text notnull=false ${PLAIN}`,
+          `column federation_updated_at timestamp with time zone notnull=false ${PLAIN}`,
+          "constraint tenant_register_federation_demo_off CHECK ((NOT (federation_enabled AND (kind = 'DEMO'::text))))",
         ],
       },
     ],
