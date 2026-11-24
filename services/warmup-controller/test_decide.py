@@ -330,6 +330,20 @@ class StopTests(unittest.TestCase):
         self.assertEqual(decision.action, Action.STOP)
         self.assertEqual(decision.state.stop_reasons, ("blocklist",))
 
+    def test_a_run_on_missing_data_does_not_mark_yesterday_read(self) -> None:
+        # Run 1 has no feeds and no row for yesterday, so it reads nothing; run 2, the same day, has the rejections.
+        cluster = with_day(clean_evidence(real=100), YESTERDAY, rejections_5_7=20)
+        early = dataclasses.replace(
+            cluster, feeds={}, days=tuple(d for d in cluster.days if d.day != YESTERDAY)
+        )
+        first = decide(early, ready_state(3), clock)
+        later = NOW + timedelta(hours=2)
+        self.assertNotEqual(first.state.evaluated_through, YESTERDAY)
+        cluster_later = with_day(clean_evidence(real=100, at=later), YESTERDAY, rejections_5_7=20)
+        second = decide(cluster_later, first.state, fixed(later))
+        self.assertEqual(second.action, Action.STOP)
+        self.assertEqual(second.state.stop_reasons, ("rejections_5_7_cluster",))
+
     def test_a_day_already_read_by_an_earlier_run_does_not_stop_the_lane_again(self) -> None:
         evidence = with_day(clean_evidence(real=100), TODAY - timedelta(days=2), rejections_5_7=20)
         state = dataclasses.replace(ready_state(3), evaluated_through=YESTERDAY)
