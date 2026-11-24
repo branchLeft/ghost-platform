@@ -6,7 +6,7 @@ A workflow with `pull_request.paths` runs on a pull request only when its diff t
 
 ## Exceptions
 
-`EXCEPTIONS` in the test lists the workflows that keep an unfiltered push, each with the reason. Today the list is empty: `infra-provisioning-scripts-ci.yml` mirrors its paths onto the push and runs a weekly full-tree backstop for the CODEOWNERS ownership test. An entry that is no longer a violation fails the test, so the list cannot rot.
+`EXCEPTIONS` in the test lists the workflows that keep an unfiltered push, each with the reason. Today the list is empty: `infra-provisioning-scripts-ci.yml` mirrors its paths onto the push and runs a weekly full-tree backstop. An entry that is no longer a violation fails the test, so the list cannot rot.
 
 A workflow with no `pull_request.paths` at all (the required checks among them) is out of scope: a workflow-level filter on a required check never reports and blocks the merge. Gate those with a step skip or a `changes` job instead.
 
