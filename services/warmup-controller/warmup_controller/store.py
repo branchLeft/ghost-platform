@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -40,9 +41,11 @@ def _known_stage(stage: int) -> None:
 def write_json_atomic(path: Path, payload: JsonObject) -> None:
     """Writes `payload` whole to a sibling file, then renames it over `path`: a reader never sees half a file."""
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    # A unique name, so a leftover temp file from an earlier run cannot block this one.
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temp = Path(name)
     try:
+        os.fchmod(descriptor, 0o644)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
@@ -245,21 +248,21 @@ class Ledger:
         )
 
     def append(self, row: JsonObject) -> None:
-        """Adds one row at the end.
+        """Adds one row at the end. The check and the write happen under one lock.
 
         Raises:
             LedgerError: a `daily` row for that day exists, or the ledger cannot be read whole.
         """
-        existing = self.rows()
-        day = row.get("day")
-        if row.get("kind") == "daily" and any(
-            r.get("kind") == "daily" and r.get("day") == day for r in existing
-        ):
-            raise LedgerError("duplicate_daily_row", day)
         line = json.dumps(row, sort_keys=True) + "\n"
-        descriptor = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        descriptor = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
+            existing = self.rows()
+            day = row.get("day")
+            if row.get("kind") == "daily" and any(
+                r.get("kind") == "daily" and r.get("day") == day for r in existing
+            ):
+                raise LedgerError("duplicate_daily_row", day)
             os.write(descriptor, line.encode("utf-8"))
             os.fsync(descriptor)
         finally:

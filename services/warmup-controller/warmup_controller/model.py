@@ -37,6 +37,13 @@ class Action(StrEnum):
     RESUME = "resume"
 
 
+class EvidenceError(ValueError):
+    """A count or rate that cannot be real. It is refused when the evidence is built."""
+
+    def __init__(self, field: str, detail: str) -> None:
+        super().__init__(f"{field}: {detail}")
+
+
 @dataclass(frozen=True)
 class DayEvidence:
     """One UTC day on the newsletter lane.
@@ -55,6 +62,16 @@ class DayEvidence:
     rejections_5_7: int = 0
     # The hourly blocklist check found IP2 listed at any hour of the day.
     blocklisted: bool = False
+
+    def __post_init__(self) -> None:
+        """A count cannot be negative: a negative one would pass a gate it should fail.
+
+        Raises:
+            EvidenceError: a count is negative.
+        """
+        for name in ("real_sent", "seed_sent", "hard_bounces", "rejections_5_7"):
+            if getattr(self, name) < 0:
+                raise EvidenceError(name, f"negative on {self.day.isoformat()}")
 
 
 @dataclass(frozen=True)
@@ -80,6 +97,16 @@ class Evidence:
     gmail_spam_rate_pct: float | None = None
     # When that reading was taken. A reading with no time, or one older than the freshness limit, is stale.
     gmail_spam_rate_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        """A spam rate is a percentage. NaN is allowed: the gates hold on it.
+
+        Raises:
+            EvidenceError: the Gmail spam rate is outside 0 to 100 percent.
+        """
+        rate = self.gmail_spam_rate_pct
+        if rate is not None and (rate < 0 or rate > 100):
+            raise EvidenceError("gmail_spam_rate_pct", f"outside 0 to 100: {rate}")
 
     def day(self, when: date) -> DayEvidence:
         """The evidence for one day; a day the feed has no row for sent nothing."""

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -14,6 +16,7 @@ from warmup_controller.decide import decide
 from warmup_controller.model import ControllerState
 from warmup_controller.stages import DestinationGroup
 from warmup_controller.store import (
+    JsonObject,
     Ledger,
     LedgerError,
     PublishedState,
@@ -181,6 +184,40 @@ class LedgerTests(TempDir):
         self.assertEqual(gates["evidence_floor"]["passed"], False)
         self.assertEqual(gates["evidence_floor"]["value"], "0 of 7 days")
         self.assertEqual(json.loads(json.dumps(row)), row)
+
+
+class TempNameTests(TempDir):
+    def test_a_leftover_temp_file_from_an_earlier_run_does_not_block_a_write(self) -> None:
+        target = self.dir / "state.json"
+        leftover = self.dir / f".state.json.{os.getpid()}.tmp"
+        leftover.write_text("old")
+        write_json_atomic(target, {"stage": 1})
+        self.assertEqual(json.loads(target.read_text()), {"stage": 1})
+        self.assertEqual(leftover.read_text(), "old")
+
+
+class LedgerLockTests(TempDir):
+    def test_the_duplicate_check_runs_while_the_ledger_lock_is_held(self) -> None:
+        state = {"locked": False}
+        seen: list[bool] = []
+        real_flock = fcntl.flock
+        real_rows = Ledger.rows
+
+        def spy_flock(descriptor: int, operation: int) -> None:
+            real_flock(descriptor, operation)
+            state["locked"] = operation == fcntl.LOCK_EX
+
+        def spy_rows(ledger: Ledger) -> list[JsonObject]:
+            seen.append(state["locked"])
+            return real_rows(ledger)
+
+        row = {"kind": "daily", "day": TODAY.isoformat(), "action": "hold"}
+        with (
+            mock.patch("warmup_controller.store.fcntl.flock", spy_flock),
+            mock.patch.object(Ledger, "rows", spy_rows),
+        ):
+            Ledger(self.dir / "ledger.jsonl").append(row)
+        self.assertEqual(seen, [True])
 
 
 if __name__ == "__main__":

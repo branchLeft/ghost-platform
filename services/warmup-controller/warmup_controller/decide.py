@@ -31,7 +31,9 @@ def decide(
     clock: Clock,
     cards: OwnerCards | None = None,
 ) -> Decision:
-    """Advance, hold, wait, step down, stop or resume. Bad evidence holds; it never raises.
+    """Advance, hold, wait, step down, stop or resume. Evidence that fails a check holds.
+
+    Evidence with a negative count or rate is refused when it is built (see `model.py`).
 
     The decision's state records yesterday as read only when the delivery feed was fresh and
     yesterday's row was there (see `rules.day_is_read`).
@@ -115,8 +117,14 @@ def _while_stopped(
     stale: tuple[str, ...],
 ) -> Decision:
     if stops:
+        # A stop that arrives while held is kept with the earlier ones. A new reason gets a new
+        # stop time, so a card for the earlier stop cannot resume it (see `rules.resume_allowed`).
+        reasons = tuple(dict.fromkeys((*state.stop_reasons, *stops)))
+        kept = state
+        if reasons != state.stop_reasons:
+            kept = replace(state, stop_reasons=reasons, stopped_at=now)
         return _decision(
-            today, Action.HOLD, state, state, evidence, reasons=("stopped", *stops), alerts=stale
+            today, Action.HOLD, state, kept, evidence, reasons=("stopped", *stops), alerts=stale
         )
     if stale:
         return _decision(

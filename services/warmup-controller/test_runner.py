@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from scenarios import NOW, TODAY, clean_evidence, clock
+from warmup_controller.decide import NaiveClockError
 from warmup_controller.model import Action, OwnerCards, ResumeCard, SeedPlacement
 from warmup_controller.runner import Paths, run_once
 from warmup_controller.store import (
@@ -158,6 +159,18 @@ class RunnerTests(unittest.TestCase):
         published = parse_published(json.loads(self.paths.published_state.read_text()))
         self.assertEqual(published.stage, 2)
         self.assertEqual(Ledger(self.paths.ledger).rows()[-1]["action"], "advance")
+
+
+class NaiveClockRunTests(unittest.TestCase):
+    def test_a_clock_with_no_timezone_is_refused_before_any_write(self) -> None:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        root = Path(holder.name)
+        paths = Paths(root / "controller.json", root / "ip2.json", root / "ledger.jsonl")
+        naive = datetime(2026, 12, 10, 6, 0)
+        with self.assertRaises(NaiveClockError):
+            run_once(clean_evidence(), lambda: naive, paths)
+        self.assertEqual(list(root.iterdir()), [])
 
 
 if __name__ == "__main__":
