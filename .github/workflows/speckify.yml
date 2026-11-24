@@ -8,12 +8,11 @@ name: Speckify
 # from each spec to GitHub Packages, from this job and this workflow file, with
 # the run's own GITHUB_TOKEN and nothing else.
 #
-# Speckify is checked out at the commit its v0.1.2 tag points at, built from its
-# lockfile, and run directly. Its composite action is not used: called as
-# `uses: branchLeft/speckify@<sha>` it hands an absolute `github.action_path` to
-# setup-node's `node-version-file`, which setup-node joins onto the workspace, and
-# the job fails before it runs Speckify. Its reusable workflow is check-only.
-# The final publish step is npm's, not `speckify publish`: see the comment on it.
+# The check job checks Speckify out at the commit its v0.1.2 tag points at, builds
+# it from its lockfile and runs it directly. The publish job uses that same
+# commit's composite action, which runs `speckify publish`: it packs, attests and
+# publishes the tarballs itself. The composite action at v0.1.2 writes its own
+# Node version, so it no longer depends on a caller's `node-version-file`.
 
 on:
   pull_request:
@@ -122,125 +121,40 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout Speckify v0.1.2
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: branchLeft/speckify
-          ref: b9be3996ac8684f44bc6ff53dbc4d5cc787816bd
-          path: .speckify-tool
-          persist-credentials: false
-
-      # `registry-url` and `scope` write the .npmrc line that lets the
-      # NODE_AUTH_TOKEN below authenticate `npm publish` for @branchleft only;
-      # every other package, including Speckify's own dependencies, still
-      # resolves from the default registry.
-      - name: Setup Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .speckify-tool/.nvmrc
-          registry-url: https://npm.pkg.github.com
-          scope: '@branchleft'
-
-      - name: Build Speckify from its lockfile
-        working-directory: .speckify-tool
-        run: |
-          corepack enable
-          pnpm install --frozen-lockfile
-          pnpm run build
-
       # What the broker runs and what gets published must be the same
       # generated code: refuse to publish if the committed copy has drifted.
+      # The build is the same Speckify the publish below runs.
       - name: Generate the packages into .speckify/out
-        run: node .speckify-tool/dist/cli.js build --config speckify.yaml
+        uses: branchLeft/speckify@b9be3996ac8684f44bc6ff53dbc4d5cc787816bd # v0.1.2
+        with:
+          command: build
+          config: speckify.yaml
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: The committed generated sources are what Speckify generates
         run: python3 scripts/assert-contracts-generated.py .speckify/out
 
-      - name: Speckify plan
-        run: node .speckify-tool/dist/cli.js plan --json --config speckify.yaml
+      # Every contract in speckify.yaml is published here: `speckify publish` at
+      # v0.1.2 has no flag to pick one. That includes the provisioning API, so
+      # each push to main publishes @branchleft/ghost-platform-provisioning-api
+      # as well as the broker package. Nothing consumes that package yet, and an
+      # agent cannot unpublish it. Narrowing this to the broker is a follow-up.
+      #
+      # `speckify publish` packs each package, attests the tarballs, checks each
+      # tarball's sha-256 against the attestation and publishes those same files.
+      # It skips a version the registry already holds. The package.json it
+      # publishes carries `repository` and `publishConfig` because Speckify
+      # writes them itself (speckify v0.1.2), so this job edits nothing.
+      - name: speckify publish
+        uses: branchLeft/speckify@b9be3996ac8684f44bc6ff53dbc4d5cc787816bd # v0.1.2
+        with:
+          command: publish
+          config: speckify.yaml
+          attest: 'true'
+          attestation-repo: branchLeft/ghost-platform
+          attestation-signer-workflow: branchLeft/ghost-platform/.github/workflows/speckify.yml
+          attestation-source-ref: refs/heads/main
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
-      # Only the broker's package is packed and published below. The provisioning
-      # API is built and drift-checked above like the broker's, but nothing
-      # consumes it from the registry yet: the portal links its generated
-      # sources from this repository, and the real service it describes does not
-      # exist. Publishing it is its own change, made when something installs it.
-      #
-      # This last step is a workaround, not the design. Speckify 0.1.0 writes a
-      # package.json with no `repository` and no `publishConfig`, and a package
-      # GitHub Packages cannot link to this repository can be refused a publish
-      # by this run's token (403, nothing published). `speckify publish`
-      # regenerates the package, so it would drop any field set beforehand; the
-      # fields are set here on Speckify's own build output and the package is
-      # published with npm. The tool's check, plan and build, and the drift
-      # guard above, still run. When Speckify writes those fields itself
-      # go back to `speckify publish`.
-      - name: Link the generated package to this repository
-        run: |
-          set -euo pipefail
-          pkg=.speckify/out/broker-api/typescript/package.json
-          jq '.repository = {type: "git", url: "git+https://github.com/branchLeft/ghost-platform.git", directory: "services/broker"}
-              | .publishConfig = {registry: "https://npm.pkg.github.com", access: "public"}' \
-            "$pkg" > "$pkg.tmp"
-          mv "$pkg.tmp" "$pkg"
-          jq '{name, version, repository, publishConfig}' "$pkg"
-
-      # A version the registry already holds is skipped, as `speckify publish`
-      # does; any other failure to read the registry stops the job. A version
-      # that is to be published is packed once here; the attest and publish
-      # steps below run only for it, on the same file, so the bytes signed are
-      # the bytes the registry receives.
-      - name: Pack the generated package unless the registry holds it
-        id: pack
-        working-directory: .speckify/out/broker-api/typescript
-        run: |
-          set -euo pipefail
-          name=$(jq -r .name package.json)
-          version=$(jq -r .version package.json)
-          case "$name" in
-            @branchleft/*) ;;
-            *) echo "::error::refusing to publish $name outside the @branchleft scope"; exit 1 ;;
-          esac
-          if found=$(npm view "$name@$version" version --registry https://npm.pkg.github.com 2>&1); then
-            echo "$name@$version is already published; nothing to do"
-            echo "publish=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          case "$found" in
-            *E404*) ;;
-            *) echo "::error::could not read the registry: $found"; exit 1 ;;
-          esac
-          mkdir -p "${RUNNER_TEMP}/pack"
-          packed="$(npm pack --pack-destination "${RUNNER_TEMP}/pack" --json)"
-          file="$(jq -er '.[0].filename' <<<"${packed}")"
-          test -f "${RUNNER_TEMP}/pack/${file}"
-          {
-            echo "publish=true"
-            echo "tarball=${RUNNER_TEMP}/pack/${file}"
-            echo "package=${name}@${version}"
-          } >> "${GITHUB_OUTPUT}"
-        env:
-          NODE_AUTH_TOKEN: ${{ github.token }}
-
-      - name: Attest the tarball
-        if: steps.pack.outputs.publish == 'true'
-        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
-        with:
-          tarball: ${{ steps.pack.outputs.tarball }}
-          repo: branchLeft/ghost-platform
-          signer-workflow: branchLeft/ghost-platform/.github/workflows/speckify.yml
-          ref: refs/heads/main
-
-      - name: Publish to GitHub Packages
-        if: steps.pack.outputs.publish == 'true'
-        run: |
-          set -euo pipefail
-          npm publish "${TARBALL}" --registry https://npm.pkg.github.com
-          echo "broker-api-typescript: published ${PACKAGE}"
-        env:
-          TARBALL: ${{ steps.pack.outputs.tarball }}
-          PACKAGE: ${{ steps.pack.outputs.package }}
           NODE_AUTH_TOKEN: ${{ github.token }}
