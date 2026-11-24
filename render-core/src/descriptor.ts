@@ -270,6 +270,15 @@ export type BreakGlassSpec =
 export type AnalyticsSpec =
   { readonly kind: 'off' } | { readonly kind: 'on'; readonly siteUuid: string };
 
+/**
+ * Tenant federation (ActivityPub). Off by default: an absent field and
+ * `kind: 'off'` mean the same thing, and the Network setting stays locked.
+ * `on` unlocks the setting and is refused for a demo, so no demo can ever
+ * render with federation. See environment.ts (federationEnvironment) and
+ * environment.md#social-web-lock.
+ */
+export type ActivityPubSpec = { readonly kind: 'off' } | { readonly kind: 'on' };
+
 export interface TenantDescriptor {
   /**
    * The schema version this descriptor was built against. A reconciler that
@@ -301,6 +310,8 @@ export interface TenantDescriptor {
   readonly expiresAt: Instant | null;
   /** Absent means off (LLD-11 section 09). */
   readonly analytics?: AnalyticsSpec;
+  /** Absent means off (environment.md#social-web-lock). */
+  readonly activitypub?: ActivityPubSpec;
 }
 
 /**
