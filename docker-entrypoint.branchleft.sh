@@ -120,11 +120,44 @@ check_storage_feature() {
 # (themes/footer-credit/README.md). Replace such a copy with the image's own,
 # which is the copy a new site is seeded with. A copy that already carries the
 # credit partial is left alone, and a theme the image does not bundle is never
-# touched. The replaced copy is moved aside into the content directory, not
-# deleted. See docker-entrypoint.branchleft.md#bundled-theme-refresh.
+# touched. A copy is replaced only while its files still match the pinned,
+# unpatched bundle hash (themes/manifest.json treeSha256, written into the image
+# as bundled-theme-pins.txt): a copy the tenant has changed is left as it is.
+# The new copy is staged beside the old one and renamed into place, so a failed
+# copy never leaves a half-written live theme, and the replaced copy is moved
+# aside into the content directory, not deleted. A failure prints a warning and
+# leaves the old theme live; it never stops Ghost from starting.
+# See docker-entrypoint.branchleft.md#bundled-theme-refresh.
+
+# sha256 of stdin as hex: sha256sum in the image, shasum on a macOS host.
+sha256_hex() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -d' ' -f1
+    else
+        shasum -a 256 | cut -d' ' -f1
+    fi
+}
+
+# The content hash themes/lib/treehash.mjs computes, in POSIX sh: sha256 of the
+# sorted "<sha256 of file>  <path>" lines (a symlink as "link:<target>  <path>").
+tree_sha256() {
+    (
+        cd "$1" || exit 1
+        find . \( -type f -o -type l \) | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r rel; do
+            if [ -L "$rel" ]; then
+                printf 'link:%s  %s\n' "$(readlink "$rel")" "$rel"
+            else
+                printf '%s  %s\n' "$(sha256_hex < "$rel")" "$rel"
+            fi
+        done | sha256_hex
+    )
+}
+
 refresh_bundled_themes() {
     content="${GHOST_CONTENT:-/var/lib/ghost/content}"
-    seed_themes="${GHOST_INSTALL:-/var/lib/ghost}/content.orig/themes"
+    install_dir="${GHOST_INSTALL:-/var/lib/ghost}"
+    seed_themes="$install_dir/content.orig/themes"
+    pins="$install_dir/bundled-theme-pins.txt"
     site_themes="$content/themes"
     backup="$content/theme-backup-pre-footer-credit"
     partial="partials/platform-footer-credit.hbs"
@@ -142,18 +175,40 @@ refresh_bundled_themes() {
         [ -e "$src/$partial" ] || continue
         [ -e "$target/$partial" ] && continue
 
+        # Only an unmodified bundled copy is replaced: its files must hash to
+        # the pinned, unpatched bundle. Anything else is the tenant's own.
+        pin=$(awk -v n="$name" '$1 == n { print $2; exit }' "$pins" 2>/dev/null) || pin=""
+        if [ -z "$pin" ] || [ "$(tree_sha256 "$target")" != "$pin" ]; then
+            echo "left bundled theme $name untouched: it does not match the pinned bundle (tenant-changed or unknown), so it keeps its credit gap" >&2
+            continue
+        fi
+
         owner=""
         if [ "$(id -u)" = '0' ]; then
             owner=$(stat -c '%u:%g' "$target")
         fi
-        mkdir -p "$backup"
-        mv "$target" "$backup/$name.$(date -u +%Y%m%dT%H%M%SZ)"
-        cp -RL "$src" "$target"
-        if [ -n "$owner" ]; then
-            chown -R "$owner" "$target"
+        staged="$site_themes/.$name.refresh-$$"
+        rm -rf "$staged"
+        if ! { cp -RL "$src" "$staged" && { [ -z "$owner" ] || chown -R "$owner" "$staged"; }; }; then
+            rm -rf "$staged"
+            echo "WARNING: could not copy bundled theme $name; the previous copy stays live" >&2
+            continue
+        fi
+        stamp=$(date -u +%Y%m%dT%H%M%SZ)
+        if ! mkdir -p "$backup" || ! mv "$target" "$backup/$name.$stamp"; then
+            rm -rf "$staged"
+            echo "WARNING: could not move the previous $name theme aside; it stays live" >&2
+            continue
+        fi
+        if ! mv "$staged" "$target"; then
+            mv "$backup/$name.$stamp" "$target" 2>/dev/null || true
+            rm -rf "$staged"
+            echo "WARNING: could not put bundled theme $name in place; the previous copy stays live" >&2
+            continue
         fi
         echo "refreshed bundled theme $name (previous copy kept in $backup)" >&2
     done
+    return 0
 }
 
 case "$*" in

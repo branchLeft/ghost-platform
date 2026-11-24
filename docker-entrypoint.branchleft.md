@@ -25,10 +25,15 @@ existing site would keep a copy from before the platform footer credit
 (`themes/footer-credit/README.md`). `refresh_bundled_themes` runs on Ghost
 starts only, after the storage guard. For each bundled theme that is a real
 directory in the volume and lacks `partials/platform-footer-credit.hbs`, it
-moves that copy to `theme-backup-pre-footer-credit/` in the content directory
-and copies the image's own theme in, keeping the owner when run as root. A
-symlinked theme, a theme the image does not bundle, and a copy that already
-carries the credit are left alone. Tests: `themes/footer-credit/test_theme_refresh.py`.
+replaces that copy only when the copy's files still hash to the pinned,
+unpatched bundle (`themes/manifest.json` `treeSha256`, written into the image
+as `bundled-theme-pins.txt`). A copy the tenant has changed is left as it is and
+the wrapper logs one line saying so. The new copy is staged beside the old one
+and renamed into place; the old copy moves to `theme-backup-pre-footer-credit/`
+in the content directory, and the owner is kept when run as root. A failed copy
+prints a warning and leaves the old theme live; Ghost still starts. A symlinked
+theme, a theme the image does not bundle, and a copy that already carries the
+credit are left alone. Tests: `themes/footer-credit/test_theme_refresh.py`.
 
 ## Storage-adapter fail-closed guard
 

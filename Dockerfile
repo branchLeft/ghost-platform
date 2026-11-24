@@ -154,6 +154,7 @@ COPY themes/footer-credit/ /tmp/themes/footer-credit/
 RUN set -e \
     && node /tmp/themes/fetch.mjs --out /tmp/themes-bundle \
     && node /tmp/themes/verify.mjs --bundle /tmp/themes-bundle --base-themes /var/lib/ghost/current/content/themes \
+    && awk '/"name":/ { n = $0; sub(/.*"name": *"/, "", n); sub(/".*/, "", n) } /"treeSha256":/ { h = $0; sub(/.*"treeSha256": *"/, "", h); sub(/".*/, "", h); print n, h }' /tmp/themes/manifest.json > /var/lib/ghost/bundled-theme-pins.txt \
     && cp -R /tmp/themes-bundle/themes/. /var/lib/ghost/content.orig/themes/ \
     && apk add --no-cache patch \
     && sh /tmp/themes/footer-credit/apply.sh /var/lib/ghost/content.orig/themes \
