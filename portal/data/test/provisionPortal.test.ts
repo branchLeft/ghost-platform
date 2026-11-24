@@ -438,7 +438,7 @@ describe('the provisioning lifecycle', () => {
     const before = await stateSnapshot();
     const result = await run();
     expect(result.code).toBe(1);
-    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 19 \(f00d\)/);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 20 \(f00d\)/);
     expect(await stateSnapshot()).toEqual(before);
   });
 

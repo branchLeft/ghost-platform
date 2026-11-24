@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DemoState } from '../src/demoLifecycle.js';
-import { DemoRequestExistsError, type DemoRequestInput } from '../src/demoRequest.js';
+import { readDatabaseError } from '../src/databaseError.js';
+import {
+  DemoRequestExistsError,
+  parseDemoRequest,
+  type DemoRequestInput,
+} from '../src/demoRequest.js';
 import type { DemoExtensionInput } from '../src/demoExtension.js';
 import { ProspectDb } from '../src/prospect/index.js';
 import { ProvisionerDb } from '../src/provisioner/index.js';
@@ -120,31 +125,7 @@ describe('an address whose earlier demo FAILED may request again', () => {
   });
 });
 
-describe('only the lifecycle worker may clear a claim, and only to false', () => {
-  it('refuses the provisioner setting claim_open back to true', async () => {
-    const address = `reopen-${randomUUID()}@example.invalid`;
-    const demoId = await claim(address, PATH.FAILED);
-    const error = await rejection(
-      fx.provisioner.query('UPDATE portal.demo_request SET claim_open = true WHERE demo_id = $1', [
-        demoId,
-      ])
-    );
-    expect((error as { code?: string }).code).toBe('42501');
-    expect(await openClaim(demoId)).toBe(false);
-  });
-
-  it('refuses the provisioner changing any other column of a request', async () => {
-    const { demoId } = await prospect.submit(request());
-    const error = await rejection(
-      fx.provisioner.query(
-        'UPDATE portal.demo_request SET new_to_ghost = false WHERE demo_id = $1',
-        [demoId]
-      )
-    );
-    expect((error as { code?: string }).code).toBe('42501');
-  });
-});
-
+const PERMISSION_DENIED = '42501';
 const WORDING = 'EXTENSION_CONSENT_WORDING';
 
 function answers(): DemoExtensionInput {
@@ -158,6 +139,30 @@ function answers(): DemoExtensionInput {
     consentWording: WORDING,
   };
 }
+
+describe('only the lifecycle worker may clear a claim, and only to false', () => {
+  it('refuses the provisioner setting claim_open back to true', async () => {
+    const address = `reopen-${randomUUID()}@example.invalid`;
+    const demoId = await claim(address, PATH.FAILED);
+    const error = await rejection(
+      provisioner.run((tx) =>
+        tx.update(demoRequest).set({ claimOpen: true }).where(eq(demoRequest.demoId, demoId))
+      )
+    );
+    expect(readDatabaseError(error)?.code).toBe(PERMISSION_DENIED);
+    expect(await openClaim(demoId)).toBe(false);
+  });
+
+  it('refuses the provisioner changing any other column of a request', async () => {
+    const { demoId } = await prospect.submit(request());
+    const error = await rejection(
+      provisioner.run((tx) =>
+        tx.update(demoRequest).set({ newToGhost: false }).where(eq(demoRequest.demoId, demoId))
+      )
+    );
+    expect(readDatabaseError(error)?.code).toBe(PERMISSION_DENIED);
+  });
+});
 
 describe('a prospect whose earlier demo FAILED reads and extends the new request', () => {
   it('reads the second request, not the FAILED one, on the status page', async () => {
@@ -178,15 +183,13 @@ describe('a prospect whose earlier demo FAILED reads and extends the new request
 
 describe('the front door cannot write the open claim', () => {
   it('refuses its insert of a request with claim_open false', async () => {
+    const forged = parseDemoRequest(request(`forged-${randomUUID()}@example.invalid`));
     const error = await rejection(
-      fx.prospect.query(
-        `INSERT INTO portal.demo_request (demo_id, verified_subject, verified_address,
-           publication_name, new_to_ghost, outlet_type, consent_wording, explainer_wording, claim_open)
-         VALUES ($1, 's', $2, 'p', true, 'o', 'c', 'e', false)`,
-        [randomUUID(), `forged-${randomUUID()}@example.invalid`]
+      prospect.run((tx) =>
+        tx.insert(demoRequest).values({ ...forged, demoId: randomUUID(), claimOpen: false })
       )
     );
-    expect((error as { code?: string }).code).toBe('42501');
+    expect(readDatabaseError(error)?.code).toBe(PERMISSION_DENIED);
   });
 
   it('still accepts its own insert with the default claim', async () => {

@@ -221,15 +221,13 @@ describe('one open request per verified address, enforced by the table', () => {
     expect(await rejection(reused.submit(request()))).toBeInstanceOf(DemoRequestIdTakenError);
   });
 
-  it('is the constraint that does it: with it dropped (and rolled back), the same insert is accepted', async () => {
+  it('is the index that does it: with it dropped (and rolled back), the same insert is accepted', async () => {
     const taken = row();
     await fx.adminDb.insert(demoRequest).values(taken);
     const client = await fx.admin.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        'ALTER TABLE portal.demo_request DROP CONSTRAINT demo_request_verified_address_unique'
-      );
+      await client.query('DROP INDEX portal.demo_request_one_open_claim_per_address');
       await client.query(
         `INSERT INTO portal.demo_request (demo_id, verified_subject, verified_address, publication_name,
            new_to_ghost, outlet_type, consent_wording, explainer_wording)
