@@ -115,6 +115,17 @@ class RunnerTests(unittest.TestCase):
         published = parse_published(json.loads(self.paths.published_state.read_text()))
         self.assertTrue(published.held)
 
+    def test_a_half_written_ledger_does_not_block_a_stop_from_being_published(self) -> None:
+        run_once(clean_evidence(real=3), clock, self.paths)
+        with self.paths.ledger.open("a", encoding="utf-8") as handle:
+            handle.write('{"kind": "ev')  # a row cut off mid-write, no newline
+        blocklisted = dataclasses.replace(clean_evidence(real=3), blocklisted_now=True)
+        decision = run_once(blocklisted, clock, self.paths)
+        self.assertEqual(decision.action, Action.STOP)
+        self.assertIn("ledger_unwritable", decision.alerts)
+        published = parse_published(json.loads(self.paths.published_state.read_text()))
+        self.assertTrue(published.held)
+
     def test_a_corrupt_controller_state_stops_the_run_before_any_write(self) -> None:
         self.paths.controller_state.write_text("{")
         with self.assertRaises(StateCorruptError):
