@@ -257,6 +257,7 @@ describe('static: nothing a model, a network or a package could reach', () => {
     expect(readers.map(({ name }) => name)).toEqual(['processEntry.ts']);
     const entry = (readers[0] as { text: string }).text;
     expect(entry.match(/process\s*\.\s*env/g)).toHaveLength(1);
-    expect(entry).toContain('return runRelease(release, deps, config, process.env);');
+    expect(entry).toContain('const env: ModelFreeEnvironment = process.env;');
+    expect(entry).toContain('return runRelease(release, deps, config, env);');
   });
 });
