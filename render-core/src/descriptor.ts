@@ -121,6 +121,28 @@ export interface MailSpec {
    * mail.md#mail-route.
    */
   readonly route?: MailRouteSpec;
+  /**
+   * Where Ghost's bulk-mail client submits newsletters. Absent means the
+   * host's own mail spool, so a descriptor written before this field existed
+   * renders exactly what it always did. See mail.md#bulk-endpoint.
+   */
+  readonly bulk?: BulkMailSpec;
+}
+
+/**
+ * A provider-neutral bulk-mail endpoint: the https origin Ghost's bulk client
+ * submits to, the account identifier it addresses there, and the *name* of
+ * the secrets-file key that holds the credential. It carries no credential
+ * value and no provider name; the value reaches the host only through
+ * `/etc/branchleft/<slug>.env`. See mail.md#bulk-endpoint.
+ */
+export interface BulkMailSpec {
+  /** An https origin (scheme and host, optional port, no path, no userinfo). */
+  readonly endpoint: string;
+  /** The account identifier Ghost addresses on the endpoint (its `domain`). */
+  readonly domain: string;
+  /** The secrets-file key holding the credential: `GHOST_BULK_` then upper-case letters, digits and `_`. */
+  readonly credentialRef: string;
 }
 
 /** The two sending targets the collector may be told to use. */

@@ -2,6 +2,19 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
+## 0.10.0
+
+- **Additive:** an optional `mail.bulk` (`{ endpoint, domain, credentialRef }`) names a
+  provider-neutral bulk-mail endpoint for a paying tenant with an SMTP transport. It renders
+  `bulkEmail__mailgun__baseUrl` and `bulkEmail__mailgun__domain`, and `bulkEmail__mailgun__apiKey` as
+  a reference to the secrets-file key `credentialRef` names (which `renderSecretsTemplate` lists).
+  An absent `bulk` means the host's own mail spool and the key `GHOST_BULK_EMAIL_API_KEY`, so a
+  descriptor written before this field renders byte-identical artefacts (golden test). `validate()`
+  refuses a non-https or non-origin endpoint, a malformed domain or key name, a stray key, a demo,
+  mail off, and a `queue` transport. New exports `BulkMailSpec`, `BULK_CREDENTIAL_REF_PATTERN`,
+  `BULK_DOMAIN_PATTERN` and `MAX_BULK_DOMAIN_LENGTH`. The schema `version` stays 1 and the set of
+  rendered environment names is unchanged. See `src/mail.md#bulk-endpoint`.
+
 ## 0.9.0
 
 - **Additive:** an optional `activitypub` field on the tenant descriptor, `{ kind: 'off' } | { kind: 'on' }`.
