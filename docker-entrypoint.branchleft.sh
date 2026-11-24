@@ -120,9 +120,10 @@ check_storage_feature() {
 # (themes/footer-credit/README.md). Replace such a copy with the image's own,
 # which is the copy a new site is seeded with. A copy that already carries the
 # credit partial is left alone, and a theme the image does not bundle is never
-# touched. A copy is replaced only while its files still match the pinned,
-# unpatched bundle hash (themes/manifest.json treeSha256, written into the image
-# as bundled-theme-pins.txt): a copy the tenant has changed is left as it is.
+# touched. A copy is replaced only while its files match a tree a shipped image
+# installed (themes/shipped-trees.txt, written into the image as
+# bundled-theme-pins.txt, one "name sha256" line per tree): a copy the tenant has
+# changed matches none and is left as it is.
 # The new copy is staged beside the old one and renamed into place, so a failed
 # copy never leaves a half-written live theme, and the replaced copy is moved
 # aside into the content directory, not deleted. A failure prints a warning and
@@ -175,11 +176,12 @@ refresh_bundled_themes() {
         [ -e "$src/$partial" ] || continue
         [ -e "$target/$partial" ] && continue
 
-        # Only an unmodified bundled copy is replaced: its files must hash to
-        # the pinned, unpatched bundle. Anything else is the tenant's own.
-        pin=$(awk -v n="$name" '$1 == n { print $2; exit }' "$pins" 2>/dev/null) || pin=""
-        if [ -z "$pin" ] || [ "$(tree_sha256 "$target")" != "$pin" ]; then
-            echo "left bundled theme $name untouched: it does not match the pinned bundle (tenant-changed or unknown), so it keeps its credit gap" >&2
+        # Only a copy as a shipped image installed it is replaced: its files must
+        # hash to one of the listed trees for this theme. Anything else is the
+        # tenant's own, and is left alone.
+        digest=$(tree_sha256 "$target")
+        if ! awk -v n="$name" -v h="$digest" '$1 == n && $2 == h { found = 1 } END { exit !found }' "$pins" 2>/dev/null; then
+            echo "left bundled theme $name untouched: it matches no shipped tree (tenant-changed or unknown), so it keeps its credit gap" >&2
             continue
         fi
 

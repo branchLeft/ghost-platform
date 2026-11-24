@@ -36,6 +36,15 @@ PRISTINE_OLDER = {
     "package.json": '{"name":"older","version":"2"}',
     "default.hbs": "pristine footer\n",
 }
+# The same theme as an earlier image installed it after the platform-fonts step:
+# the font files, the stylesheet, the font partial and the font call in default.hbs.
+FONTS_OLDER = {
+    **PRISTINE_OLDER,
+    "default.hbs": "pristine footer\n{{> \"platform-fonts\"}}\n",
+    "partials/platform-fonts.hbs": '<link rel="stylesheet" href="{{asset "platform-fonts/fonts.css"}}">\n',
+    "assets/platform-fonts/fonts.css": "@font-face { font-family: X; src: url(X.woff2); }\n",
+    "assets/platform-fonts/X.woff2": "font bytes\n",
+}
 
 
 def write(path: Path, text: str) -> None:
@@ -79,14 +88,18 @@ class ThemeRefreshTest(unittest.TestCase):
         write(self.seed / "older" / PARTIAL, CREDIT)
         write(self.seed / "older" / "default.hbs", "image footer\n")
 
-        # The pinned, unpatched hash of "older", as themes/manifest.json records it.
-        pristine = self.tmp / "pristine" / "older"
-        for rel, text in PRISTINE_OLDER.items():
-            write(pristine / rel, text)
-        write(
-            self.install / "bundled-theme-pins.txt",
-            f"older {tree_sha256(pristine)}\n",
-        )
+        # The trees shipped images installed for "older": the unpatched bundle
+        # (the image before the footer and font steps) is listed.
+        self.write_shipped("older", PRISTINE_OLDER)
+
+    def write_shipped(self, name: str, files: dict[str, str]) -> None:
+        """Add the tree an earlier image installed for `name` to the shipped list."""
+        root = Path(tempfile.mkdtemp(prefix=f"shipped-{name}-", dir=self.tmp))
+        for rel, text in files.items():
+            write(root / rel, text)
+        pins = self.install / "bundled-theme-pins.txt"
+        with pins.open("a") as out:
+            out.write(f"{name} {tree_sha256(root)}\n")
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -120,6 +133,22 @@ class ThemeRefreshTest(unittest.TestCase):
         kept = list((self.content / "theme-backup-pre-footer-credit").glob("older.*"))
         self.assertEqual(len(kept), 1, "the replaced copy is moved aside, not deleted")
         self.assertEqual((kept[0] / "default.hbs").read_text(), "pristine footer\n")
+        self.assert_no_staged_copies()
+
+    def test_copy_as_an_earlier_image_installed_it_with_fonts_is_replaced(self) -> None:
+        # The shipped list holds the tree an earlier image installed after its
+        # font step, not the bare bundle; the site's copy is exactly that tree.
+        self.write_shipped("older", FONTS_OLDER)
+        for rel, text in FONTS_OLDER.items():
+            write(self.site / "older" / rel, text)
+        result = self.run_wrapper(GHOST_BOOT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.site / "older" / "default.hbs").read_text(), "image footer\n")
+        self.assertEqual((self.site / "older" / PARTIAL).read_text(), CREDIT)
+        kept = list((self.content / "theme-backup-pre-footer-credit").glob("older.*"))
+        self.assertEqual(len(kept), 1)
+        self.assertEqual((kept[0] / "assets" / "platform-fonts" / "fonts.css").read_text(),
+                         FONTS_OLDER["assets/platform-fonts/fonts.css"])
         self.assert_no_staged_copies()
 
     def test_modified_bundled_theme_is_left_untouched(self) -> None:

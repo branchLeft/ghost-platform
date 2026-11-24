@@ -306,8 +306,8 @@ writes locally are genuinely ephemeral-safe:
   every theme is absent, which is how the container gets a working theme every
   time, not a sign of data loss. A bundled theme already in the volume is
   refreshed by the wrapper entrypoint (`refresh_bundled_themes`) when it lacks
-  the platform footer credit and still matches the pinned bundle; a copy the
-  tenant has changed is left alone.
+  the platform footer credit and matches a tree a shipped image installed
+  (`themes/shipped-trees.txt`); a copy the tenant has changed is left alone.
 
 Nothing else Ghost writes locally is safe to lose, which is why the database
 and media adapters are both externalised via the variables above.

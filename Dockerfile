@@ -147,14 +147,14 @@ RUN rm -rf /tmp/kalotyp
 # (themes/footer-credit/README.md): one patch per theme, applied with no fuzz,
 # prints it beside Ghost's own "Powered by Ghost", which stays. `patch` is a
 # build-time tool only: installed, used and removed in this one layer.
-COPY themes/fetch.mjs themes/verify.mjs themes/manifest.json /tmp/themes/
+COPY themes/fetch.mjs themes/verify.mjs themes/manifest.json themes/shipped-trees.txt /tmp/themes/
 COPY themes/lib/ /tmp/themes/lib/
 COPY themes/licences/ /tmp/themes/licences/
 COPY themes/footer-credit/ /tmp/themes/footer-credit/
 RUN set -e \
     && node /tmp/themes/fetch.mjs --out /tmp/themes-bundle \
     && node /tmp/themes/verify.mjs --bundle /tmp/themes-bundle --base-themes /var/lib/ghost/current/content/themes \
-    && awk '/"name":/ { n = $0; sub(/.*"name": *"/, "", n); sub(/".*/, "", n) } /"treeSha256":/ { h = $0; sub(/.*"treeSha256": *"/, "", h); sub(/".*/, "", h); print n, h }' /tmp/themes/manifest.json > /var/lib/ghost/bundled-theme-pins.txt \
+    && cp /tmp/themes/shipped-trees.txt /var/lib/ghost/bundled-theme-pins.txt \
     && cp -R /tmp/themes-bundle/themes/. /var/lib/ghost/content.orig/themes/ \
     && apk add --no-cache patch \
     && sh /tmp/themes/footer-credit/apply.sh /var/lib/ghost/content.orig/themes \
