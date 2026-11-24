@@ -1,9 +1,56 @@
 {
-  "id": "b6a7dadc-77f0-46b6-a1f7-8091a4c503fe",
-  "prevId": "05c0be09-d0c2-448b-899e-62e960e35656",
+  "id": "abced202-06b1-4620-9019-9d60a3753af6",
+  "prevId": "189a742a-26b1-4243-9f0f-adfd3405b234",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
+    "portal.account": {
+      "name": "account",
+      "schema": "portal",
+      "columns": {
+        "account_id": {
+          "name": "account_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "identity_org_id": {
+          "name": "identity_org_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "account_identity_org_id_unique": {
+          "name": "account_identity_org_id_unique",
+          "nullsNotDistinct": false,
+          "columns": ["identity_org_id"]
+        }
+      },
+      "policies": {
+        "tenant_account": {
+          "name": "tenant_account",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"account\".\"account_id\" = (SELECT \"portal\".\"tenant_register\".\"account_id\" FROM \"portal\".\"tenant_register\" WHERE \"portal\".\"tenant_register\".\"tenant_id\" = public.bound_tenant())"
+        }
+      },
+      "checkConstraints": {},
+      "isRLSEnabled": true
+    },
     "portal.connected_domain": {
       "name": "connected_domain",
       "schema": "portal",
@@ -1464,10 +1511,46 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "federation_enabled": {
+          "name": "federation_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "federation_updated_by": {
+          "name": "federation_updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "federation_updated_at": {
+          "name": "federation_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
-      "foreignKeys": {},
+      "foreignKeys": {
+        "tenant_register_account_id_account_account_id_fk": {
+          "name": "tenant_register_account_id_account_account_id_fk",
+          "tableFrom": "tenant_register",
+          "tableTo": "account",
+          "schemaTo": "portal",
+          "columnsFrom": ["account_id"],
+          "columnsTo": ["account_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "tenant_register_zitadel_org_id_unique": {
@@ -1502,6 +1585,10 @@
         "tenant_register_kind_known": {
           "name": "tenant_register_kind_known",
           "value": "\"portal\".\"tenant_register\".\"kind\" IN ('REAL', 'DEMO')"
+        },
+        "tenant_register_federation_demo_off": {
+          "name": "tenant_register_federation_demo_off",
+          "value": "NOT (\"portal\".\"tenant_register\".\"federation_enabled\" AND \"portal\".\"tenant_register\".\"kind\" = 'DEMO')"
         },
         "tenant_register_tenant_name_shape": {
           "name": "tenant_register_tenant_name_shape",
