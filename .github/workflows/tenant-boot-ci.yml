@@ -65,6 +65,11 @@ jobs:
       - name: Pull the pinned image by digest
         run: docker pull "$TENANT_BOOT_IMAGE"
 
+      # The gate is a safety class: its own tests run before the boot step, so a
+      # broken gate fails here rather than passing a boot it should refuse.
+      - name: Gate unit tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
       # The JSON report is the evidence: the gate reads the live test's own
       # status and fails the job unless it passed, so a skip cannot pass as green.
       - name: Boot the rendered stack and expect 200 on /
