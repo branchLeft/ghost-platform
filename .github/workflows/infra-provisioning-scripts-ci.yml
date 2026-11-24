@@ -51,11 +51,8 @@ on:
   # tests scan that directory), the tenant name register and the two naming.ts
   # files and the app host's volume script (compared for agreement), the
   # bucket-fencing runbook, and the pinned Python version. It also reaches the
-  # inputs of test_codeowners_ownership.py: the CODEOWNERS file, every package
-  # manifest, workspace file and Dockerfile, and the repository's scripts
-  # directory, which a secret-bearing job runs and CODEOWNERS must own. A push to
-  # main starts it on the same paths, and a weekly run of the whole tree is the
-  # backstop for a file such a job imports from elsewhere.
+  # input of test_codeowners_ownership.py, the CODEOWNERS file. A push to main
+  # starts it on the same paths, and a weekly run of the whole tree is the backstop.
   pull_request:
     branches: [main]
     paths:

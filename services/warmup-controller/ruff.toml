@@ -1,0 +1,14 @@
+# Shared branchLeft Python lint policy (SYNC-1). `target-version` is left
+# unset on purpose — ruff infers it from `requires-python` in the consuming
+# repo's own pyproject.toml, and PY-3's check reads that field directly.
+# Rationale per rule set: branchLeft/standards docs/shell-and-python.md.
+line-length = 100
+
+[lint]
+# DOC501 is a preview rule: dead without `preview = true`, and
+# `explicit-preview-rules = true` keeps that flag from also turning on any
+# OTHER preview rule under TRY/BLE/N/ANN/S's prefixes — only a code listed
+# here, not a prefix, can select one. Rationale: docs/shell-and-python.md.
+preview = true
+explicit-preview-rules = true
+extend-select = ["TRY", "BLE", "N", "ANN", "S", "DOC501"]
