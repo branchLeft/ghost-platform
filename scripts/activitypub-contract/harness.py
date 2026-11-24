@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import secrets
 import struct
 import subprocess
 import sys
@@ -58,9 +59,11 @@ MYSQL84 = DatabaseImage(
     "8.4.13",
 )
 MIGRATE_USER = "ap_migrate"
-MIGRATE_PASSWORD = "migrate-pw-0001"
+# Made fresh for every run; hex, so it is safe inside the migrate image's URL.
+MIGRATE_PASSWORD = secrets.token_hex(16)
 SERVICE_USER = "ap_service"
-SERVICE_PASSWORD = "service-pw-0001"
+SERVICE_PASSWORD = secrets.token_hex(16)
+READONLY_PASSWORD = secrets.token_hex(16)
 STORAGE_PATH = "/var/ap-content"
 OTHER_STORAGE_URL = "https://files.example.test/.ghost/activitypub/local-storage"
 
@@ -713,8 +716,8 @@ class Harness:
     def observe_site_write_privilege(self, topology: Topology, db: Database) -> None:
         o = self.obs
         db.delete_site(SITE_NAME)
-        db.create_account("ap_readonly", "readonly-pw-0001", ("SELECT",))
-        env = service_env(extra={"MYSQL_USER": "ap_readonly", "MYSQL_PASSWORD": "readonly-pw-0001"})
+        db.create_account("ap_readonly", READONLY_PASSWORD, ("SELECT",))
+        env = service_env(extra={"MYSQL_USER": "ap_readonly", "MYSQL_PASSWORD": READONLY_PASSWORD})
         name, port = self.start_service("service-readonly", env, topology)
         self.wait_ping(port, name)
         result = http_request(

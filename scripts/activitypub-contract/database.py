@@ -7,12 +7,14 @@ container, so the harness holds no client library.
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from dockerx import DockerError, Lab, docker, wait_until
 
-ROOT_PASSWORD = "contract-root-pw"
+# Made fresh for every run: nothing about a throwaway server is committed.
+ROOT_PASSWORD = secrets.token_hex(16)
 SCHEMA = "activitypub"
 
 

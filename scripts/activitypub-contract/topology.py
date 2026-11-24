@@ -8,6 +8,7 @@ they do in production. Layout and reasoning: CONTRACT.md.
 
 from __future__ import annotations
 
+import secrets
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -18,7 +19,8 @@ from dockerx import Lab, host_port, http_request, logs, wait_until
 
 SITE_NAME = "ghost.test"
 OWNER_EMAIL = "owner@ghost.test"
-OWNER_PASSWORD = "Contract-Owner-pw-0123456789"
+# Made fresh for every run, and long enough for Ghost's own password rules.
+OWNER_PASSWORD = f"Ap-{secrets.token_hex(16)}"
 SERVICE_PORT = 8080
 GHOST_PORT = 2368
 EDGE_IMAGE = "docker.io/library/nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de"
