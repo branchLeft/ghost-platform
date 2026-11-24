@@ -106,7 +106,26 @@ class DemoEgressTests(unittest.TestCase):
         self.bin = os.path.join(self.dir, "bin")
         os.makedirs(self.bin)
         self.log = os.path.join(self.dir, "calls.log")
+        self.systemd_dir = os.path.join(self.dir, "systemd")
+        os.makedirs(self.systemd_dir)
+        self.proc_dir = os.path.join(self.dir, "proc")
+        os.makedirs(self.proc_dir)
         install_fakes(self.bin)
+
+    def write_text(self, name, text):
+        path = os.path.join(self.dir, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def write_dockerd_process(self, argv, environ=()):
+        pid_dir = os.path.join(self.proc_dir, "4242")
+        os.makedirs(pid_dir)
+        for name, content in (("comm", "dockerd\n"),
+                              ("cmdline", "".join(item + "\0" for item in argv)),
+                              ("environ", "".join(item + "\0" for item in environ))):
+            with open(os.path.join(pid_dir, name), "w", encoding="utf-8") as handle:
+                handle.write(content)
 
     def write_daemon_json(self, text):
         path = os.path.join(self.dir, "daemon.json")
@@ -130,6 +149,8 @@ class DemoEgressTests(unittest.TestCase):
             "FAKE_VERSION": version,
             # Never the real /etc/docker/daemon.json: absent unless a test writes one.
             "BRANCHLEFT_DEMO_EGRESS_DAEMON_JSON": daemon_json or os.path.join(self.dir, "absent.json"),
+            "BRANCHLEFT_DEMO_EGRESS_SYSTEMD_DIR": self.systemd_dir,
+            "BRANCHLEFT_DEMO_EGRESS_PROC": self.proc_dir,
         }
         # None leaves the variable unset, so the program's own default applies.
         if expected_host is not None:
@@ -263,6 +284,102 @@ class DemoEgressTests(unittest.TestCase):
         self.assertIn("cannot tell", result.stderr)
         self.assertEqual(self.restored_calls(), [])
 
+    def unit(self, **props):
+        # The output systemctl show gives for the docker unit, from the named properties.
+        lines = ["LoadState=loaded", "NeedDaemonReload=no",
+                 "ExecStart={ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd -H fd:// ; ignore_errors=no }"]
+        lines += props.get("extra", [])
+        return "\n".join(lines) + "\n"
+
+    def refused_with_nothing_written(self, result, *words):
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        for word in words:
+            self.assertIn(word, result.stderr)
+        self.assertEqual(self.restored_calls(), [])
+
+    # No systemd: the other sources decide, and a running dockerd is read directly.
+    def test_without_systemd_the_program_still_applies_when_nothing_names_nftables(self):
+        result = self.run_script(extra_env={"BRANCHLEFT_DEMO_EGRESS_SYSTEMD_DIR": os.path.join(self.dir, "no-systemd")})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.restored("iptables"), EXPECTED_RULESET)
+
+    def test_without_systemd_refuses_a_running_dockerd_whose_command_line_sets_nftables(self):
+        self.write_dockerd_process(["/usr/local/bin/dockerd", "--firewall-backend=nftables"])
+        result = self.run_script(extra_env={"BRANCHLEFT_DEMO_EGRESS_SYSTEMD_DIR": os.path.join(self.dir, "no-systemd")})
+        self.refused_with_nothing_written(result, "firewall-backend")
+
+    def test_without_systemd_refuses_a_running_dockerd_whose_environment_sets_nftables(self):
+        self.write_dockerd_process(["/usr/local/bin/dockerd"], environ=["PATH=/usr/bin", "DOCKER_FIREWALL_BACKEND=nftables"])
+        result = self.run_script(extra_env={"BRANCHLEFT_DEMO_EGRESS_SYSTEMD_DIR": os.path.join(self.dir, "no-systemd")})
+        self.refused_with_nothing_written(result, "firewall-backend")
+
+    def test_without_systemd_refuses_a_running_dockerd_whose_config_file_sets_nftables(self):
+        path = self.write_text("dockerd.json", '{"firewall-backend": "nftables"}')
+        self.write_dockerd_process(["/usr/local/bin/dockerd", "--config-file=" + path])
+        result = self.run_script(extra_env={"BRANCHLEFT_DEMO_EGRESS_SYSTEMD_DIR": os.path.join(self.dir, "no-systemd")})
+        self.refused_with_nothing_written(result, "firewall-backend")
+
+    def test_systemd_present_but_systemctl_missing_refuses(self):
+        # The fake systemctl is removed, and PATH holds only the fakes: a systemctl on this machine would answer.
+        os.remove(os.path.join(self.bin, "systemctl"))
+        result = self.run_script(extra_env={"PATH": self.bin})
+        self.refused_with_nothing_written(result, "systemctl cannot run", "cannot tell")
+
+    # Sources the unit names: EnvironmentFile and --config-file.
+    def test_refuses_an_environment_file_that_sets_nftables_in_docker_opts(self):
+        env_file = self.write_text("docker-env", 'DOCKER_OPTS="--firewall-backend=nftables"\n')
+        out = self.unit(extra=[f"EnvironmentFile={env_file} (ignore_errors=no)"])
+        self.refused_with_nothing_written(self.run_script(extra_env={"FAKE_SYSTEMCTL_OUT": out}), "firewall-backend")
+
+    def test_refuses_an_environment_file_that_sets_docker_firewall_backend_to_nftables(self):
+        env_file = self.write_text("docker-env", "DOCKER_FIREWALL_BACKEND=nftables\n")
+        out = self.unit(extra=[f"EnvironmentFile=-{env_file} (ignore_errors=yes)"])
+        self.refused_with_nothing_written(self.run_script(extra_env={"FAKE_SYSTEMCTL_OUT": out}), "firewall-backend")
+
+    def test_applies_when_an_optional_environment_file_is_absent(self):
+        out = self.unit(extra=[f"EnvironmentFile=-{self.dir}/missing (ignore_errors=yes)"])
+        result = self.run_script(v4_chain=1, extra_env={"FAKE_SYSTEMCTL_OUT": out})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_refuses_an_environment_file_it_cannot_read(self):
+        out = self.unit(extra=[f"EnvironmentFile={self.dir} (ignore_errors=no)"])
+        self.refused_with_nothing_written(self.run_script(extra_env={"FAKE_SYSTEMCTL_OUT": out}), "cannot read")
+
+    def test_refuses_a_required_environment_file_that_is_absent(self):
+        out = self.unit(extra=[f"EnvironmentFile={self.dir}/missing (ignore_errors=no)"])
+        self.refused_with_nothing_written(self.run_script(extra_env={"FAKE_SYSTEMCTL_OUT": out}), "does not exist")
+
+    def test_refuses_a_config_file_given_with_equals_that_sets_nftables(self):
+        path = self.write_text("dockerd.json", '{"firewall-backend": "nftables"}')
+        out = self.unit(extra=[]).replace("-H fd://", f"--config-file={path} -H fd://")
+        self.refused_with_nothing_written(self.run_script(v4_chain=1, extra_env={"FAKE_SYSTEMCTL_OUT": out}), "firewall-backend")
+
+    def test_refuses_a_config_file_given_as_a_separate_argument_that_sets_nftables(self):
+        path = self.write_text("dockerd.json", '{"firewall-backend": "nftables"}')
+        out = self.unit(extra=[]).replace("-H fd://", f"--config-file {path} -H fd://")
+        self.refused_with_nothing_written(self.run_script(v4_chain=1, extra_env={"FAKE_SYSTEMCTL_OUT": out}), "firewall-backend")
+
+    def test_refuses_a_config_file_the_unit_names_that_is_absent(self):
+        out = self.unit(extra=[]).replace("-H fd://", f"--config-file={self.dir}/missing.json -H fd://")
+        self.refused_with_nothing_written(self.run_script(extra_env={"FAKE_SYSTEMCTL_OUT": out}), "does not exist")
+
+    # Medium: quoted entries, case, the exact LoadState match, and a reload pending.
+    def test_refuses_a_quoted_environment_entry_that_sets_nftables(self):
+        out = self.unit(extra=['Environment="DOCKER_FIREWALL_BACKEND=nftables"'])
+        self.refused_with_nothing_written(self.run_script(extra_env={"FAKE_SYSTEMCTL_OUT": out}), "firewall-backend")
+
+    def test_refuses_an_upper_case_nftables_on_the_command_line(self):
+        out = self.unit(extra=[]).replace("-H fd://", "--firewall-backend=NFTABLES -H fd://")
+        self.refused_with_nothing_written(self.run_script(extra_env={"FAKE_SYSTEMCTL_OUT": out}), "firewall-backend")
+
+    def test_a_load_state_inside_another_line_does_not_count_as_loaded(self):
+        out = "Environment=X=LoadState=loaded\nLoadState=not-found\n"
+        self.refused_with_nothing_written(self.run_script(extra_env={"FAKE_SYSTEMCTL_OUT": out}), "cannot tell")
+
+    def test_refuses_when_systemd_has_changed_the_unit_without_a_reload(self):
+        out = self.unit(extra=[]).replace("NeedDaemonReload=no", "NeedDaemonReload=yes")
+        self.refused_with_nothing_written(self.run_script(extra_env={"FAKE_SYSTEMCTL_OUT": out}), "daemon-reload")
+
     def test_refuses_an_unreadable_daemon_json_rather_than_guessing(self):
         path = self.write_daemon_json("{not json")
         result = self.run_script(daemon_json=path)
@@ -323,6 +440,8 @@ class HungToolTests(unittest.TestCase):
             "FAKE_RESTORE_EXIT": "0",
             "BRANCHLEFT_DEMO_EGRESS_HOST": THIS_HOST,
             "BRANCHLEFT_DEMO_EGRESS_DAEMON_JSON": os.path.join(tmp.name, "absent.json"),
+            "BRANCHLEFT_DEMO_EGRESS_SYSTEMD_DIR": tmp.name,
+            "BRANCHLEFT_DEMO_EGRESS_PROC": os.path.join(tmp.name, "proc"),
         }
         err = io.StringIO()
         with mock.patch.dict(os.environ, env, clear=True), redirect_stderr(err):
