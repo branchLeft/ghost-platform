@@ -11,8 +11,8 @@
 # EVERYTHING ELSE lands on an agent review plus green CI: app code, auth, control-plane
 # and broker code, security policy, edge and Caddy, Dockerfiles, dependencies, tests,
 # engineering docs, runbooks, hosts and Pulumi, and every workflow that neither
-# enforces a required check nor gates a deploy, with the Dependabot settings and
-# the image-mirror lists. Do not own a path because it is
+# enforces a required check, gates a deploy, holds a secret nor grants a write
+# permission, with the Dependabot settings. Do not own a path because it is
 # sensitive; ask whether weakening it would disable a guard. Owner ruling.
 #
 # GitHub applies the LAST matching line. There is deliberately no catch-all line: a
@@ -98,6 +98,20 @@
 /.github/workflows/speckify.yml                  @branchLeft/branchleft-admin
 /.github/workflows/publish-*.yml                 @branchLeft/branchleft-admin
 /.github/workflows/*-image.yml                   @branchLeft/branchleft-admin
+
+# Workflows that hold a secret other than GITHUB_TOKEN or grant a write permission
+# (code scanning, the lockfile commit, the image mirror, the two watchers), with
+# what the credentialed mirror reads and runs. The test reads every workflow and
+# fails when a file that matches this rule is not owned.
+/.github/workflows/codeql.yml                    @branchLeft/branchleft-admin
+/.github/workflows/generate-lockfile.yml         @branchLeft/branchleft-admin
+/.github/workflows/image-mirror.yml              @branchLeft/branchleft-admin
+/.github/workflows/major-watcher-run.yml         @branchLeft/branchleft-admin
+/.github/workflows/release-watcher-run.yml       @branchLeft/branchleft-admin
+/.github/image-mirror/                           @branchLeft/branchleft-admin
+/scripts/mirror-images.py                        @branchLeft/branchleft-admin
+/scripts/probe_private_packages.py               @branchLeft/branchleft-admin
+/scripts/test_probe_private_packages.py          @branchLeft/branchleft-admin
 
 # Promotion and upgrade gates: their output feeds the signed promotion attestation.
 /services/release-classifier/src/                @branchLeft/branchleft-admin

@@ -14,6 +14,7 @@ import os
 import pathlib
 import posixpath
 import re
+import sys
 import unittest
 from dataclasses import dataclass
 from typing import Optional, Sequence
@@ -166,6 +167,17 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("infra/provisioning/scripts/check_private_tenant_plan.py", True, "approval gate"),
     ("registers/private-tenant-plan.json", True, "owner's approval register"),
     ("registers/tenant-names.json", True, "gate input of provision-tenant.yml"),
+    # Credentialed or write-permission workflows, and what they run by path.
+    (".github/workflows/codeql.yml", True, "grants a write permission"),
+    (".github/workflows/generate-lockfile.yml", True, "writes contents, refuses main"),
+    (".github/workflows/image-mirror.yml", True, "writes packages"),
+    (".github/workflows/major-watcher-run.yml", True, "holds a secret and writes"),
+    (".github/workflows/release-watcher-run.yml", True, "holds a secret and writes"),
+    (".github/image-mirror/images.json", True, "list the credentialed mirror reads"),
+    (".github/image-mirror/private-packages.json", True, "list the credentialed probe reads"),
+    ("scripts/mirror-images.py", True, "run by the credentialed mirror"),
+    ("scripts/probe_private_packages.py", True, "run by the mirror workflow"),
+    ("scripts/test_probe_private_packages.py", True, "test of a kept gate"),
     # (b) Human-facing documents: owned.
     ("README.md", True, "top-level document"),
     ("CONTRIBUTING.md", True, "top-level document"),
@@ -173,15 +185,11 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("render-core/LICENSE", True, "legal text"),
     ("portal/apps/src/tenant/explainerPages.ts", True, "product copy"),
     # Released: trust extended to agents on sensitive code.
-    (".github/workflows/codeql.yml", False, "scanning, not a required check"),
     (".github/workflows/broker-ci.yml", False, "component CI, not required"),
     (".github/workflows/mail-gate-ci.yml", False, "component CI, not required"),
     (".github/workflows/gate-set-ci.yml", False, "CI of a gate, not required"),
-    (".github/workflows/release-watcher-run.yml", False, "scheduled watcher"),
     (".github/workflows/provisioning-gate-watch.yml", False, "scheduled monitor"),
-    (".github/workflows/image-mirror.yml", False, "mirrors third-party images"),
     (".github/dependabot.yml", False, "update settings"),
-    (".github/image-mirror/images.json", False, "list of images to mirror"),
     ("Dockerfile", False, "image build"),
     ("portal/Dockerfile", False, "image build"),
     ("services/mail-collector/Dockerfile", False, "image build"),
@@ -210,7 +218,6 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("adapters/sso/src/break-glass.js", False, "app code"),
     ("services/demo-edge/Dockerfile", False, "edge image"),
     ("csp/derive/derive-script-hashes.mjs", False, "generator"),
-    ("scripts/mirror-images.py", False, "tooling"),
     ("scripts/mail-gate/mail-gate.mjs", True, "run by the gate set"),
     ("scripts/test-storage-guard.sh", True, "run by the gate set"),
     ("scripts/smoke-test.sh", True, "run by the gate set"),
@@ -360,6 +367,82 @@ class GateWorkflowsKeepTheirOwner(CodeownersCase):
                         owning_rule(self.rules, f".github/workflows/{workflow}"),
                         f"{workflow} emits the required check {name!r} and is not owned",
                     )
+
+
+def hold_reasons(text: str, is_action: bool) -> list[str]:
+    """Why a workflow or action file stays owned, read from its own text.
+
+    A file stays owned when it names a secret other than GITHUB_TOKEN, carries
+    an environment, grants any write permission, has no explicit permissions
+    block, or declares secrets on workflow_call.
+    """
+    out: list[str] = []
+    if (
+        re.search(r"(?<![\w-])secrets\.(?!GITHUB_TOKEN\b)[A-Za-z_]", text)
+        or re.search(r"(?<![\w-])secrets\[", text)
+        or re.search(r"secrets:\s*inherit", text)
+    ):
+        out.append("secrets")
+    if re.search(r"^\s+environment:", text, re.M):
+        out.append("environment")
+    if re.search(r"^\s+[a-z-]+:\s*write\s*(#.*)?$", text, re.M) or re.search(
+        r"permissions:\s*write-all", text
+    ):
+        out.append("write permission")
+    if re.search(r"workflow_call:", text) and re.search(r"^\s{4}secrets:\s*$", text, re.M):
+        out.append("workflow_call secrets")
+    if not is_action and not re.search(r"^permissions:", text, re.M):
+        start = re.search(r"^jobs:\s*$", text, re.M)
+        body = text[start.end() :] if start else ""
+        pattern = r"^  (?=[A-Za-z0-9_.-]+:\s*(?:#.*)?$)"
+        jobs = re.split(pattern, body, flags=re.M)[1:]
+        if not jobs or any(not re.search(r"^    permissions:", job, re.M) for job in jobs):
+            out.append("no permissions block")
+    return out
+
+
+class WorkflowsHeldByTheRule(CodeownersCase):
+    """Every workflow or local action that matches the hold rule must be owned."""
+
+    def test_the_rule_reads_the_cases_it_names(self) -> None:
+        cases = {
+            "a secret": ("env:\n  T: ${{ secrets.TOKEN }}\n", "secrets"),
+            "an environment": ("jobs:\n  a:\n    environment: prod\n", "environment"),
+            "a write": ("permissions:\n  contents: write\n", "write permission"),
+            "no block": ("on: push\njobs:\n  a:\n    runs-on: x\n", "no permissions block"),
+        }
+        for name, (text, reason) in cases.items():
+            with self.subTest(case=name):
+                self.assertIn(reason, hold_reasons(text, False))
+        plain = "env:\n  T: ${{ secrets.GITHUB_TOKEN }}\npermissions: {}\n"
+        self.assertEqual(hold_reasons(plain, False), [])
+
+    def test_every_matching_workflow_is_owned(self) -> None:
+        files = sorted((REPO / ".github" / "workflows").glob("*.y*ml"))
+        files += sorted((REPO / ".github" / "actions").glob("*/action.y*ml"))
+        self.assertGreater(len(files), 10, "no workflows found to check")
+        unowned: list[str] = []
+        for file in files:
+            rel = file.relative_to(REPO).as_posix()
+            reasons = hold_reasons(file.read_text(encoding="utf-8"), "/actions/" in rel)
+            if reasons and owning_rule(self.rules, rel) is None:
+                unowned.append(f"{rel} ({', '.join(reasons)})")
+        self.assertEqual(
+            unowned,
+            [],
+            "\nThese workflows match the hold rule, so they stay owned:\n" + "\n".join(unowned),
+        )
+
+    def test_no_script_shadows_the_standard_library(self) -> None:
+        """The mirror runs `python3 scripts/<name>.py`, which puts scripts/ first on
+        the import path: a new scripts/json.py would be imported by the credentialed
+        job in place of the standard module. No such file may exist."""
+        shadows = sorted(
+            path.name
+            for path in (REPO / "scripts").glob("*.py")
+            if path.stem in sys.stdlib_module_names
+        )
+        self.assertEqual(shadows, [])
 
 
 class GateSetFilesKeepTheirOwner(CodeownersCase):
