@@ -67,6 +67,16 @@ def stale_feeds(evidence: Evidence, now: datetime) -> tuple[str, ...]:
     return tuple(problems)
 
 
+def day_is_read(evidence: Evidence, now: datetime, when: date) -> bool:
+    """A day counts as read only when the delivery feed is fresh and the day has its row.
+
+    Otherwise a later run on the same day must read the day again, so a stop is never skipped.
+    """
+    updated = evidence.feeds.get(Feed.DELIVERY)
+    fresh = updated is not None and now - updated <= timedelta(hours=STALE_AFTER_HOURS)
+    return fresh and any(entry.day == when for entry in evidence.days)
+
+
 def stop_days(today: date, evaluated_through: date | None) -> tuple[date, ...]:
     """The complete days a stop reads: every day after the last one a run read, or the last week on a first run."""
     if evaluated_through is None:

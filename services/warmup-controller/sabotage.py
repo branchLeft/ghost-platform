@@ -43,6 +43,14 @@ def _always_resume(*_args: object) -> bool:
     return True
 
 
+def _reads_nothing(*_args: object) -> tuple[object, ...]:
+    return ()
+
+
+def _always_read(*_args: object) -> bool:
+    return True
+
+
 FAULTS: tuple[Fault, ...] = (
     Fault(
         "advances on seed mail",
@@ -77,6 +85,21 @@ FAULTS: tuple[Fault, ...] = (
             "test_decide.ResumeTests.test_no_resume_without_the_card",
             "test_decide.ResumeTests.test_a_card_for_an_earlier_stop_does_not_resume_a_later_one",
         ),
+    ),
+    Fault(
+        "stop ignores the days since the last run",
+        "stop_days",
+        _reads_nothing,
+        (
+            "test_decide.StopTests.test_a_rejection_cluster_on_any_day_since_the_last_run_stops_the_lane",
+            "test_decide.StopTests.test_a_blocklisting_that_cleared_before_the_run_still_stops_the_lane",
+        ),
+    ),
+    Fault(
+        "marks a day read without its data",
+        "day_is_read",
+        _always_read,
+        ("test_decide.StopTests.test_a_run_on_missing_data_does_not_mark_yesterday_read",),
     ),
     Fault(
         "resumes a cleared blocklist at once",

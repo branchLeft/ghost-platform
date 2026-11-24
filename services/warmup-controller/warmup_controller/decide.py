@@ -33,7 +33,8 @@ def decide(
 ) -> Decision:
     """Advance, hold, wait, step down, stop or resume. Bad evidence holds; it never raises.
 
-    The decision's state records that every complete day before today has been read.
+    The decision's state records yesterday as read only when the delivery feed was fresh and
+    yesterday's row was there (see `rules.day_is_read`).
 
     Raises:
         NaiveClockError: the clock returned a datetime with no timezone.
@@ -42,8 +43,10 @@ def decide(
     now = _utc(clock())
     today = now.date()
     decision = _decide(evidence, state, owner, now, today)
-    read_through = today - timedelta(days=1)
-    return replace(decision, state=replace(decision.state, evaluated_through=read_through))
+    yesterday = today - timedelta(days=1)
+    if rules.day_is_read(evidence, now, yesterday):
+        return replace(decision, state=replace(decision.state, evaluated_through=yesterday))
+    return decision
 
 
 def _decide(
