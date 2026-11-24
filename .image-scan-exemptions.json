@@ -1415,6 +1415,96 @@
       "granted": "2026-11-23",
       "expires": "2026-12-23",
       "approved-by": "Rob, Desk decision accepting the OpenSSL scan exemption for 30 days, 23 Nov 2026"
+    },
+    {
+      "vulnerability": "CVE-2026-107493",
+      "package": "libcrypto3",
+      "image": "ghcr.io/branchleft/drain-sidecar",
+      "reason": "No fix: Grype reports no fixed version for this advisory in the Alpine openssl package that provides libcrypto3 (3.5.9-r1 on the drain sidecar's pinned node:26.13.1-alpine base), and the base image's Alpine release offers none. Reachability in this image is not established here. Accepted by the platform owner by merge of this PR, for 30 days only (to 2026-12-23), in extension of the 23 Nov 2026 acceptance; revisit when an OpenSSL fix reaches Alpine for this base, and remove this entry then.",
+      "granted": "2026-11-24",
+      "expires": "2026-12-23",
+      "approved-by": "Owner decision, pending: this entry takes effect only when the owner merges the pull request that adds it"
+    },
+    {
+      "vulnerability": "CVE-2026-107493",
+      "package": "libssl3",
+      "image": "ghcr.io/branchleft/drain-sidecar",
+      "reason": "No fix: Grype reports no fixed version for this advisory in the Alpine openssl package that provides libssl3 (3.5.9-r1 on the drain sidecar's pinned node:26.13.1-alpine base), and the base image's Alpine release offers none. Reachability in this image is not established here. Accepted by the platform owner by merge of this PR, for 30 days only (to 2026-12-23), in extension of the 23 Nov 2026 acceptance; revisit when an OpenSSL fix reaches Alpine for this base, and remove this entry then.",
+      "granted": "2026-11-24",
+      "expires": "2026-12-23",
+      "approved-by": "Owner decision, pending: this entry takes effect only when the owner merges the pull request that adds it"
+    },
+    {
+      "vulnerability": "CVE-2026-107494",
+      "package": "libcrypto3",
+      "image": "ghcr.io/branchleft/drain-sidecar",
+      "reason": "No fix: Grype reports no fixed version for this advisory in the Alpine openssl package that provides libcrypto3 (3.5.9-r1 on the drain sidecar's pinned node:26.13.1-alpine base), and the base image's Alpine release offers none. Reachability in this image is not established here. Accepted by the platform owner by merge of this PR, for 30 days only (to 2026-12-23), in extension of the 23 Nov 2026 acceptance; revisit when an OpenSSL fix reaches Alpine for this base, and remove this entry then.",
+      "granted": "2026-11-24",
+      "expires": "2026-12-23",
+      "approved-by": "Owner decision, pending: this entry takes effect only when the owner merges the pull request that adds it"
+    },
+    {
+      "vulnerability": "CVE-2026-107494",
+      "package": "libssl3",
+      "image": "ghcr.io/branchleft/drain-sidecar",
+      "reason": "No fix: Grype reports no fixed version for this advisory in the Alpine openssl package that provides libssl3 (3.5.9-r1 on the drain sidecar's pinned node:26.13.1-alpine base), and the base image's Alpine release offers none. Reachability in this image is not established here. Accepted by the platform owner by merge of this PR, for 30 days only (to 2026-12-23), in extension of the 23 Nov 2026 acceptance; revisit when an OpenSSL fix reaches Alpine for this base, and remove this entry then.",
+      "granted": "2026-11-24",
+      "expires": "2026-12-23",
+      "approved-by": "Owner decision, pending: this entry takes effect only when the owner merges the pull request that adds it"
+    },
+    {
+      "vulnerability": "CVE-2026-121482",
+      "package": "libcrypto3",
+      "image": "ghcr.io/branchleft/drain-sidecar",
+      "reason": "No fix: Grype reports no fixed version for this advisory in the Alpine openssl package that provides libcrypto3 (3.5.9-r1 on the drain sidecar's pinned node:26.13.1-alpine base), and the base image's Alpine release offers none. Reachability in this image is not established here. Accepted by the platform owner by merge of this PR, for 30 days only (to 2026-12-23), in extension of the 23 Nov 2026 acceptance; revisit when an OpenSSL fix reaches Alpine for this base, and remove this entry then.",
+      "granted": "2026-11-24",
+      "expires": "2026-12-23",
+      "approved-by": "Owner decision, pending: this entry takes effect only when the owner merges the pull request that adds it"
+    },
+    {
+      "vulnerability": "CVE-2026-121482",
+      "package": "libssl3",
+      "image": "ghcr.io/branchleft/drain-sidecar",
+      "reason": "No fix: Grype reports no fixed version for this advisory in the Alpine openssl package that provides libssl3 (3.5.9-r1 on the drain sidecar's pinned node:26.13.1-alpine base), and the base image's Alpine release offers none. Reachability in this image is not established here. Accepted by the platform owner by merge of this PR, for 30 days only (to 2026-12-23), in extension of the 23 Nov 2026 acceptance; revisit when an OpenSSL fix reaches Alpine for this base, and remove this entry then.",
+      "granted": "2026-11-24",
+      "expires": "2026-12-23",
+      "approved-by": "Owner decision, pending: this entry takes effect only when the owner merges the pull request that adds it"
+    },
+    {
+      "vulnerability": "CVE-2026-124709",
+      "package": "libcrypto3",
+      "image": "ghcr.io/branchleft/drain-sidecar",
+      "reason": "No fix: Grype reports no fixed version for this advisory in the Alpine openssl package that provides libcrypto3 (3.5.9-r1 on the drain sidecar's pinned node:26.13.1-alpine base), and the base image's Alpine release offers none. Reachability in this image is not established here. Accepted by the platform owner by merge of this PR, for 30 days only (to 2026-12-23), in extension of the 23 Nov 2026 acceptance; revisit when an OpenSSL fix reaches Alpine for this base, and remove this entry then.",
+      "granted": "2026-11-24",
+      "expires": "2026-12-23",
+      "approved-by": "Owner decision, pending: this entry takes effect only when the owner merges the pull request that adds it"
+    },
+    {
+      "vulnerability": "CVE-2026-124709",
+      "package": "libssl3",
+      "image": "ghcr.io/branchleft/drain-sidecar",
+      "reason": "No fix: Grype reports no fixed version for this advisory in the Alpine openssl package that provides libssl3 (3.5.9-r1 on the drain sidecar's pinned node:26.13.1-alpine base), and the base image's Alpine release offers none. Reachability in this image is not established here. Accepted by the platform owner by merge of this PR, for 30 days only (to 2026-12-23), in extension of the 23 Nov 2026 acceptance; revisit when an OpenSSL fix reaches Alpine for this base, and remove this entry then.",
+      "granted": "2026-11-24",
+      "expires": "2026-12-23",
+      "approved-by": "Owner decision, pending: this entry takes effect only when the owner merges the pull request that adds it"
+    },
+    {
+      "vulnerability": "CVE-2026-84786",
+      "package": "libcrypto3",
+      "image": "ghcr.io/branchleft/drain-sidecar",
+      "reason": "No fix: Grype reports no fixed version for this advisory in the Alpine openssl package that provides libcrypto3 (3.5.9-r1 on the drain sidecar's pinned node:26.13.1-alpine base), and the base image's Alpine release offers none. Reachability in this image is not established here. Accepted by the platform owner by merge of this PR, for 30 days only (to 2026-12-23), in extension of the 23 Nov 2026 acceptance; revisit when an OpenSSL fix reaches Alpine for this base, and remove this entry then.",
+      "granted": "2026-11-24",
+      "expires": "2026-12-23",
+      "approved-by": "Owner decision, pending: this entry takes effect only when the owner merges the pull request that adds it"
+    },
+    {
+      "vulnerability": "CVE-2026-84786",
+      "package": "libssl3",
+      "image": "ghcr.io/branchleft/drain-sidecar",
+      "reason": "No fix: Grype reports no fixed version for this advisory in the Alpine openssl package that provides libssl3 (3.5.9-r1 on the drain sidecar's pinned node:26.13.1-alpine base), and the base image's Alpine release offers none. Reachability in this image is not established here. Accepted by the platform owner by merge of this PR, for 30 days only (to 2026-12-23), in extension of the 23 Nov 2026 acceptance; revisit when an OpenSSL fix reaches Alpine for this base, and remove this entry then.",
+      "granted": "2026-11-24",
+      "expires": "2026-12-23",
+      "approved-by": "Owner decision, pending: this entry takes effect only when the owner merges the pull request that adds it"
     }
   ]
 }
