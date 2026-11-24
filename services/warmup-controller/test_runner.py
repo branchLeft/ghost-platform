@@ -102,6 +102,19 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.paths.controller_state.read_bytes(), controller)
         self.assertEqual(self.paths.published_state.read_bytes(), published)
 
+    def test_a_stop_reaches_the_collector_file_even_if_the_controller_state_write_fails(
+        self,
+    ) -> None:
+        run_once(clean_evidence(real=3), clock, self.paths)
+        spoiled = dataclasses.replace(clean_evidence(real=3), seed_placement=SeedPlacement.SPAM)
+        with (
+            mock.patch("warmup_controller.runner.save_state", side_effect=OSError("crash")),
+            self.assertRaises(OSError),
+        ):
+            run_once(spoiled, clock, self.paths)
+        published = parse_published(json.loads(self.paths.published_state.read_text()))
+        self.assertTrue(published.held)
+
     def test_a_corrupt_controller_state_stops_the_run_before_any_write(self) -> None:
         self.paths.controller_state.write_text("{")
         with self.assertRaises(StateCorruptError):
