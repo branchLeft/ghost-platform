@@ -195,7 +195,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0015_tenant_erasure_request',
       'applied migration 0016_demo_extension_request',
       'applied migration 0017_professional_enquiry',
-      'applied migration 0018_account_entity',
+      'applied migration 0019_account_entity',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',
@@ -545,7 +545,7 @@ describe('--migrate-only on a real server', () => {
 
   it('backfills one account per existing tenant, each holding its own organisation', async () => {
     const all = readMigrations();
-    const accountIndex = all.findIndex((m) => m.tag === '0018_account_entity');
+    const accountIndex = all.findIndex((m) => m.tag === '0019_account_entity');
     expect(accountIndex).toBeGreaterThan(0);
     expect((await run({ migrations: all.slice(0, accountIndex) })).code).toBe(0);
     // Tenants as the register held them before any account existed: a real
@@ -560,7 +560,7 @@ describe('--migrate-only on a real server', () => {
     const result = await migrate();
     expect(result.err).toEqual([]);
     expect(result.code).toBe(0);
-    expect(result.out).toContain('applied migration 0018_account_entity');
+    expect(result.out).toContain('applied migration 0019_account_entity');
     expect(result.out).toContain('post-check passed: the server matches the manifest');
     const [counted] = await admin(
       PROV_DB,

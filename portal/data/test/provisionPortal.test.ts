@@ -105,7 +105,7 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0015_tenant_erasure_request',
       'applied migration 0016_demo_extension_request',
       'applied migration 0017_professional_enquiry',
-      'applied migration 0018_account_entity',
+      'applied migration 0019_account_entity',
       // The post-check ran as the migrator, which cannot read everything: it
       // names, per mechanism, what it did not observe.
       expect.stringMatching(new RegExp(`^not observed as ${MIGRATOR}, M01: `)),

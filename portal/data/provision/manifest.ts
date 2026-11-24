@@ -162,7 +162,7 @@ const TENANT_BILLING = '0014_tenant_billing';
 const DEMO_EXTENSION = '0016_demo_extension_request';
 const TENANT_ERASURE = '0015_tenant_erasure_request';
 const PROFESSIONAL_ENQUIRY = '0017_professional_enquiry';
-const ACCOUNT = '0018_account_entity';
+const ACCOUNT = '0019_account_entity';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
