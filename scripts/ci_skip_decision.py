@@ -33,8 +33,10 @@ IMAGE_GATE: Final[tuple[str, ...]] = (
 # Paths the docs-lint reusable workflow never reads. It reads markdown, HTML,
 # the code extensions it scans for comments, and the .docs-lint* files; any
 # other extension, and any file it does not classify, is outside its input.
+# JSON is deliberately not listed: markdownlint reads .markdownlint.json (and
+# nested copies), and a rule switched off there changes the verdict.
 DOCS_LINT_GATE: Final[tuple[str, ...]] = (
-    r"(.+/)?[^/]+\.(png|jpe?g|gif|svg|txt|json)",
+    r"(.+/)?[^/]+\.(png|jpe?g|gif|svg|txt)",
     r"(.+/)?LICENSE",
 )
 
