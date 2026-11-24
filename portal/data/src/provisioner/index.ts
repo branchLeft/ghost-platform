@@ -42,7 +42,7 @@ import {
 } from '../demoReads.js';
 import type { DemoRequestView } from '../demoRequest.js';
 import { deriveExtensionView, type DemoExtensionView } from '../demoExtension.js';
-import { demoExtensionRequest, demoStateEvent } from '../schema.js';
+import { demoExtensionRequest, demoRequest, demoStateEvent } from '../schema.js';
 
 export * from '../demoLifecycle.js';
 
@@ -357,6 +357,14 @@ export class ProvisionerDb {
           extensionDays,
         })
         .returning(getTableColumns(demoStateEvent));
+      // A FAILED demo releases its address for a new request: the flag
+      // is cleared in the same transaction as the event, and only then.
+      if (to === 'FAILED') {
+        await tx
+          .update(demoRequest)
+          .set({ claimOpen: false })
+          .where(eq(demoRequest.demoId, latest.demoId));
+      }
       return deriveEventView(row!);
     } catch (error) {
       if (readDatabaseError(error)?.code === UNIQUE_VIOLATION) {

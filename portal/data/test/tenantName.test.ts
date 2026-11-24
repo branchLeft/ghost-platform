@@ -165,8 +165,8 @@ describe('the table itself refuses a taken name, even to a statement that skips 
     const message = await owner
       .run((tx) =>
         tx.execute(
-          sql`INSERT INTO portal.tenant_register (tenant_id, zitadel_org_id, kind, tenant_name)
-              VALUES ('81000000-0000-4000-8000-000000000005', 'org-raw-dup', 'REAL', 'placeholder-one')`
+          sql`INSERT INTO portal.tenant_register (tenant_id, zitadel_org_id, kind, tenant_name, account_id)
+              VALUES ('81000000-0000-4000-8000-000000000005', 'org-raw-dup', 'REAL', 'placeholder-one', (SELECT account_id FROM portal.account WHERE identity_org_id = 'org-name-one'))`
         )
       )
       .then(
@@ -182,8 +182,8 @@ describe('the table itself refuses a taken name, even to a statement that skips 
       const message = await owner
         .run((tx) =>
           tx.execute(
-            sql`INSERT INTO portal.tenant_register (tenant_id, zitadel_org_id, kind, tenant_name)
-                VALUES ('81000000-0000-4000-8000-000000000006', 'org-raw-shape', 'REAL', ${name})`
+            sql`INSERT INTO portal.tenant_register (tenant_id, zitadel_org_id, kind, tenant_name, account_id)
+                VALUES ('81000000-0000-4000-8000-000000000006', 'org-raw-shape', 'REAL', ${name}, (SELECT account_id FROM portal.account WHERE identity_org_id = 'org-name-one'))`
           )
         )
         .then(

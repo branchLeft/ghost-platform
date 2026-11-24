@@ -38,6 +38,11 @@ GATE_LOGIN_PATH = "/__gate/login"
 GATE_ENTER_PATH = "/__gate/enter"
 GATE_OWN_PATHS = (GATE_LOGIN_PATH, GATE_ENTER_PATH)
 
+# The federation surface: ActivityPub's actor and inbox prefix, WebFinger and
+# NodeInfo. A demo never has federation (render-core refuses an `on` demo), so
+# the demo host refuses these paths for every slot, before the gate.
+FEDERATION_PATHS = ("/.ghost/activitypub*", "/.well-known/webfinger*", "/.well-known/nodeinfo*")
+
 # Why the members-import refusal is not one literal path: render_demo_site.md.
 MEMBERS_UPLOAD_PATH = "/ghost/api/admin/members/upload/"
 # Caddy's `path` matcher cleans and unescapes, and is case-insensitive; a `*`
@@ -165,6 +170,20 @@ def render_upload_guard() -> list[str]:
     ]
 
 
+def render_federation_refusal() -> list[str]:
+    """The refusal of every federation path, indented one tab for the slot's
+    body. It answers 404 before the gate, so an anonymous visitor and a
+    signed-in one get the same answer, and no route reaches a service."""
+    return [
+        "\t# A demo never exposes federation (ActivityPub, WebFinger, NodeInfo): every",
+        "\t# such path is refused here, before the gate, for every slot.",
+        f"\t@federationPaths path {' '.join(FEDERATION_PATHS)}",
+        "\thandle @federationPaths {",
+        "\t\trespond 404",
+        "\t}",
+    ]
+
+
 def render_slot_body(slot: str, edge: Mapping[str, Any]) -> list[str]:
     """One slot's gated directives, indented one tab. Every path goes through
     `forward_auth`; the only routes that do not are the gate's own login and
@@ -192,6 +211,21 @@ def render_slot_body(slot: str, edge: Mapping[str, Any]) -> list[str]:
         f"\trequest_body {{",
         f"\t\tmax_size {max_size}",
         "\t}",
+        "",
+        "\troute {",
+        *routing_lines(slot),
+        "\t}",
+    ]
+
+
+def routing_lines(slot: str) -> list[str]:
+    """The slot's routing, in the order Caddy must run it, one tab deep. One
+    `route` block keeps the written order: Caddy otherwise runs a directive
+    by its own order, so a `respond` written before the catch-all can sit
+    behind it (the reviewed 502). The federation refusal and the gate's own
+    route come before the catch-all."""
+    return [
+        *render_federation_refusal(),
         "",
         "\t# The login form and the arrival link's form carry a body, which forward_auth does",
         "\t# not forward, and neither can hold a session yet: both are the gate's to answer.",

@@ -34,6 +34,7 @@ export {
 export type {
   BackupSpec,
   BreakGlassSpec,
+  BulkMailSpec,
   CodeInjectionSpec,
   DatabaseSpec,
   GateSpec,
@@ -109,9 +110,12 @@ export {
 } from './environment.js';
 export type { WidgetSource } from './environment.js';
 export {
+  BULK_CREDENTIAL_REF_PATTERN,
+  BULK_DOMAIN_PATTERN,
   credentialDomainOf,
   DEFAULT_MAIL_ROUTE,
   MAIL_ROUTES,
+  MAX_BULK_DOMAIN_LENGTH,
   MAX_SWEEGO_ALLOWANCE,
   mailRouteOf,
   renderSendingAddress,
