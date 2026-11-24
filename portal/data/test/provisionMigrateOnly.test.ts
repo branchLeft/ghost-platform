@@ -197,6 +197,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0017_professional_enquiry',
       'applied migration 0018_federation_setting',
       'applied migration 0019_account_entity',
+      'applied migration 0020_demo_one_open_claim',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',
@@ -362,7 +363,7 @@ describe('--migrate-only on a real server', () => {
       p: true,
       rls: true,
       fn: true,
-      policies: 3,
+      policies: 4,
     });
     // Widening the front door's grant is a difference the post-check names.
     await admin(PROV_DB, 'GRANT UPDATE ON portal.demo_request TO portal_prospect');

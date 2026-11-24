@@ -761,9 +761,14 @@ export const demoRequest = portal
       consentWording: text('consent_wording').notNull(),
       explainerWording: text('explainer_wording').notNull(),
       submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
+      // True while the request's demo has not FAILED: the lifecycle worker clears it
+      // in the transaction that records FAILED. One open request per address.
+      claimOpen: boolean('claim_open').notNull().default(true),
     },
     (table) => [
-      unique('demo_request_verified_address_unique').on(table.verifiedAddress),
+      uniqueIndex('demo_request_one_open_claim_per_address')
+        .on(table.verifiedAddress)
+        .where(sql`${table.claimOpen}`),
       check(
         'demo_request_address_shape',
         sql`${table.verifiedAddress} = lower(${table.verifiedAddress}) AND char_length(${table.verifiedAddress}) <= ${sql.raw(String(ADDRESS_MAX))} AND ${table.verifiedAddress} ~ ${sql.raw(`'${ADDRESS_PATTERN}'`)}`

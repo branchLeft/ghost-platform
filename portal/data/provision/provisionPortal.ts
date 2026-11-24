@@ -724,11 +724,26 @@ async function requestsSeen(tx: Tx, address: string | null): Promise<number> {
  * no other, and the update and delete must each be refused for want of a
  * privilege, before any row is looked at.
  */
+/**
+ * The probe request as a front-door insert, naming only the columns that exist
+ * before migration 0020. claim_open takes its database default (true), which is
+ * the claim a front-door insert takes.
+ */
+function insertProbeRequest(tx: Tx) {
+  return tx.execute(
+    sql`INSERT INTO portal.demo_request (demo_id, verified_subject, verified_address,
+      publication_name, new_to_ghost, outlet_type, consent_wording, explainer_wording)
+      VALUES (${PROBE_REQUEST.demoId}, ${PROBE_REQUEST.verifiedSubject}, ${PROBE_REQUEST.verifiedAddress},
+      ${PROBE_REQUEST.publicationName}, ${PROBE_REQUEST.newToGhost}, ${PROBE_REQUEST.outletType},
+      ${PROBE_REQUEST.consentWording}, ${PROBE_REQUEST.explainerWording})`
+  );
+}
+
 const PROSPECT_TABLES: Record<string, ProspectProbe> = {
   'portal.demo_request': {
-    insert: (tx) => tx.insert(demoRequest).values(PROBE_REQUEST),
+    insert: (tx) => insertProbeRequest(tx),
     readOwnRowOnly: async (tx) => {
-      await tx.insert(demoRequest).values(PROBE_REQUEST);
+      await insertProbeRequest(tx);
       const seen = [
         ['nothing bound', await requestsSeen(tx, null), 0],
         ['another address bound', await requestsSeen(tx, 'other@probe.invalid'), 0],
