@@ -1,5 +1,6 @@
+import { realpathSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import {
   createPromotionRecorderFromEnv,
   ENV_HEAD_FILE,
@@ -147,6 +148,22 @@ export async function main(config: HostEntryConfig): Promise<void> {
   process.exitCode = await runHostTick({ env: config.env });
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * True when this module is the script node was started with. Both sides are
+ * resolved to real paths first, so a symlinked directory or file (the role's
+ * `current` link) still starts the entry. A script that cannot be resolved
+ * returns true: the entry then runs and its own refusals exit non-zero, never
+ * a silent success.
+ */
+export function startedAsScript(scriptPath: string | undefined, moduleUrl: string): boolean {
+  if (scriptPath === undefined) return false;
+  try {
+    return realpathSync(scriptPath) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return true;
+  }
+}
+
+if (startedAsScript(process.argv[1], import.meta.url)) {
   void main({ env: processEnvironment() });
 }

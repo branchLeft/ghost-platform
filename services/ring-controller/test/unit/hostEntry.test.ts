@@ -14,6 +14,7 @@ import {
   main,
   recorderEnvFromHost,
   runHostTick,
+  startedAsScript,
 } from '../../src/hostEntry.js';
 import {
   ENV_HEAD_FILE,
@@ -210,5 +211,17 @@ describe('main', () => {
     } finally {
       process.exitCode = saved;
     }
+  });
+});
+
+describe('startedAsScript', () => {
+  it('is false when node was started with no script, and true for this module as the script', () => {
+    const self = join(process.cwd(), 'src', 'hostEntry.ts');
+    expect(startedAsScript(undefined, 'file:///x/hostEntry.js')).toBe(false);
+    expect(startedAsScript(self, `file://${self}`)).toBe(true);
+  });
+
+  it('runs the entry when the script cannot be resolved, so its refusal decides the exit code', () => {
+    expect(startedAsScript('/nonexistent/entry.js', 'file:///nonexistent/hostEntry.js')).toBe(true);
   });
 });
