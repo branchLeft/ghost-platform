@@ -1,0 +1,10 @@
+#!/bin/sh
+# The bundle's program. Installed as bin/ring-controller by release/pack_bundle.py and
+# held by the ring_controller_host role to be a root-owned executable no one else can write.
+#
+# The one tick of the controller is not wired into this bundle yet: the package exports
+# its library (dist/index.js) and no entry point that builds the real dependencies. Until
+# that entry exists, this program refuses to run and says so, rather than reporting a
+# tick that did nothing as a success.
+echo "ring-controller: this bundle has no tick entry point yet; nothing was run." >&2
+exit 69
