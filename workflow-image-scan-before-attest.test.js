@@ -526,12 +526,14 @@ test('only the allow-listed workflows pass exemptions-path, each at a file that 
 
 // The owner's 30-day acceptance of five OpenSSL findings no update can clear:
 // the system libssl and libcrypto packages of the tenant and portal images,
-// granted 2026-11-23, lapsing 2026-12-23. The exemption file may hold exactly
-// these twenty entries (five advisories, two packages, two images) for those
-// packages, and nothing else for those two images. Widening it by an advisory,
-// a package or an image, or giving an entry no expiry or a later one, fails
-// here. Removing the entries is the follow-up that ends the acceptance, and it
-// removes this block with them.
+// granted 2026-11-23, lapsing 2026-12-23. The drain sidecar image is a third
+// image in the same acceptance, extended to it by the owner on 2026-11-24 with
+// the same lapse date. The exemption file may hold exactly these thirty entries
+// (five advisories, two packages, three images) for those packages, and nothing
+// else for those three images. Widening it by an advisory, a package or an
+// image, or giving an entry no expiry or a later one, fails here. Removing the
+// entries is the follow-up that ends the acceptance, and it removes this block
+// with them.
 const OPENSSL_VULNERABILITIES = [
   'CVE-2026-107493',
   'CVE-2026-107494',
@@ -540,9 +542,16 @@ const OPENSSL_VULNERABILITIES = [
   'CVE-2026-84786',
 ];
 const OPENSSL_PACKAGES = ['libcrypto3', 'libssl3'];
-const OPENSSL_IMAGES = [PUBLISHERS['registry-push.yml'], PUBLISHERS['portal-apps-image.yml']];
+const DRAIN_SIDECAR_IMAGE = 'ghcr.io/branchleft/drain-sidecar';
+const OPENSSL_IMAGES = [
+  PUBLISHERS['registry-push.yml'],
+  PUBLISHERS['portal-apps-image.yml'],
+  DRAIN_SIDECAR_IMAGE,
+];
 const OPENSSL_GRANTED = '2026-11-23';
 const OPENSSL_EXPIRES = '2026-12-23';
+// The drain sidecar's entries were granted the next day, on the same lapse date.
+const grantedFor = (image) => (image === DRAIN_SIDECAR_IMAGE ? '2026-11-24' : OPENSSL_GRANTED);
 
 export function opensslExemptionProblems(source) {
   const data = JSON.parse(source);
@@ -558,11 +567,12 @@ export function opensslExemptionProblems(source) {
       OPENSSL_PACKAGES.includes(entry.package) &&
       OPENSSL_IMAGES.includes(entry.image);
     if (!inScope) {
-      found.push(`${id} is outside the five advisories, two packages and two images accepted`);
+      found.push(`${id} is outside the five advisories, two packages and three images accepted`);
       continue;
     }
     seen.set(id, (seen.get(id) ?? 0) + 1);
-    if (entry.granted !== OPENSSL_GRANTED) found.push(`${id} is not granted on ${OPENSSL_GRANTED}`);
+    if (entry.granted !== grantedFor(entry.image))
+      found.push(`${id} is not granted on ${grantedFor(entry.image)}`);
     if (entry.expires !== OPENSSL_EXPIRES)
       found.push(`${id} does not expire on ${OPENSSL_EXPIRES}`);
     if (typeof entry['approved-by'] !== 'string' || entry['approved-by'].trim() === '') {
