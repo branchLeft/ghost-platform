@@ -1,0 +1,104 @@
+name: ActivityPub contract
+
+# Runs the upstream ActivityPub service beside one platform Ghost and checks
+# every fact in scripts/activitypub-contract/contract.py against what it does.
+# The pinned upstream commit is built from source in the job, so the evidence
+# is this run, not a laptop. What each fact says and how it is observed:
+# scripts/activitypub-contract/CONTRACT.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/activitypub-contract/**'
+      - '.github/workflows/activitypub-contract-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/activitypub-contract/**'
+      - '.github/workflows/activitypub-contract-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  static:
+    name: Types, lint and tests that need no Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s scripts/activitypub-contract -p 'test_*.py' -v
+
+      # Wheels only, at exact versions: nothing is built or run at install.
+      - name: Install type checker and linter
+        run: |
+          python3 -m pip install --disable-pip-version-check --only-binary :all: \
+            mypy==2.4.1 ruff==0.17.4
+
+      - name: Type check (mypy, strict)
+        working-directory: scripts/activitypub-contract
+        run: python3 -m mypy .
+
+      - name: Lint and format check (ruff)
+        working-directory: scripts/activitypub-contract
+        run: |
+          python3 -m ruff check .
+          python3 -m ruff format --check .
+
+  contract:
+    name: The contract holds against the running service
+    runs-on: ubuntu-latest
+    # Builds the Ghost image and the two upstream images, then about eight
+    # minutes of database and service starts. Observed on a laptop; the first
+    # runner run sets the real figure.
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      - name: Build the platform Ghost image
+        run: docker build --tag ghost-platform:ci .
+
+      # Fetches the pinned upstream commit, builds the service and migrate
+      # images from it, starts everything on a throwaway network and exits
+      # non-zero when any fact is not observed as stated.
+      - name: Run the contract
+        run: >-
+          python3 scripts/activitypub-contract/harness.py
+          --ghost-image ghost-platform:ci
+          --observations "$RUNNER_TEMP/activitypub-observations.json"
+
+      - name: Keep the observations
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: activitypub-observations
+          path: ${{ runner.temp }}/activitypub-observations.json
+          if-no-files-found: warn
