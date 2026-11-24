@@ -72,6 +72,15 @@
 /scripts/smoke-test.sh                           @branchLeft/branchleft-admin
 /scripts/test-storage-guard.sh                   @branchLeft/branchleft-admin
 
+# Promotion and upgrade gates: their output feeds the signed promotion attestation.
+/services/release-classifier/src/                @branchLeft/branchleft-admin
+/services/release-classifier/test/gate.test.mjs  @branchLeft/branchleft-admin
+/services/ring-controller/src/                   @branchLeft/branchleft-admin
+/services/ring-controller/test/unit/*Sabotage*.test.ts @branchLeft/branchleft-admin
+/services/ring-controller/test/unit/helpers/sourceSabotage.ts @branchLeft/branchleft-admin
+/themes/verify.mjs                               @branchLeft/branchleft-admin
+/services/ring-controller/src/README.md
+
 # Deploy and apply gates, and the tenant-provisioning gate with its approval register.
 /infra/scripts/                                  @branchLeft/branchleft-admin
 /infra/tenant/scripts/assert-*.py                  @branchLeft/branchleft-admin
