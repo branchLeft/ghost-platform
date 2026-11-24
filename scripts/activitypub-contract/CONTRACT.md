@@ -23,6 +23,9 @@ image from it, and starts, on one throwaway Docker network:
 - a TLS edge that stands in for the tenants edge: it terminates TLS for that name, sends the
   federation paths to the service and the rest to Ghost.
 
+Every password (the database root, migrate, service and read-only accounts, and Ghost's owner) is
+made fresh for each run with `secrets.token_hex`; nothing about the throwaway accounts is committed.
+
 It exits 0 only when every fact below was observed as stated. `--learn` prints the observations
 and exits 0; `--observations FILE` saves them. The tests that need no Docker are
 `python3 -m unittest discover -s scripts/activitypub-contract -p 'test_*.py'`, the types are
