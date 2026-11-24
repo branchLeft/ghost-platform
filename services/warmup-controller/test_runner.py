@@ -122,6 +122,22 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(self.paths.ledger.exists())
         self.assertFalse(self.paths.published_state.exists())
 
+    def test_an_advance_on_a_second_run_of_the_day_is_written_to_the_ledger(self) -> None:
+        start = datetime.combine(TODAY - timedelta(days=7), NOW.timetz())
+        self.run_at(start, real=30)
+        missing = dataclasses.replace(clean_evidence(real=30), feeds={})
+        run_once(missing, clock, self.paths)  # the day's daily row: hold
+        later = NOW + timedelta(hours=1)
+        decision = run_once(clean_evidence(real=30, at=later), lambda: later, self.paths)
+        self.assertEqual(decision.action, Action.ADVANCE)
+        rows = Ledger(self.paths.ledger).rows()
+        self.assertEqual(
+            [(r["kind"], r["action"]) for r in rows[-2:]], [("daily", "hold"), ("event", "advance")]
+        )
+        self.assertEqual(rows[-1]["stageAfter"], 2)
+        published = parse_published(json.loads(self.paths.published_state.read_text()))
+        self.assertEqual(published.stage, 2)
+
     def test_a_clean_run_advances_and_publishes_the_new_stage(self) -> None:
         first = TODAY - timedelta(days=7)
         start = datetime.combine(first, NOW.timetz())
