@@ -249,15 +249,134 @@ describe('static: nothing a model, a network or a package could reach', () => {
     ]);
   });
 
-  it('reads the process environment in one entry only, and passes it on as it stands', () => {
-    const readers = sources.filter(({ text }) =>
-      /process\s*\.\s*env|process\[\s*['"]env['"]\s*\]/.test(text)
-    );
+  it('reaches the process environment through no route but the one entry', () => {
+    const scans = sources.map(({ name, text }) => ({ name, ...scanSource(name, text) }));
 
+    expect(scans.flatMap(({ findings }) => findings)).toEqual([]);
+    const readers = scans.filter(({ envReads }) => envReads > 0);
     expect(readers.map(({ name }) => name)).toEqual(['processEntry.ts']);
-    const entry = (readers[0] as { text: string }).text;
-    expect(entry.match(/process\s*\.\s*env/g)).toHaveLength(1);
+    expect(readers[0]?.envReads).toBe(1);
+  });
+
+  it('passes the entry its environment as it stands', () => {
+    const entry = sources.find(({ name }) => name === 'processEntry.ts')?.text ?? '';
     expect(entry).toContain('const env: ModelFreeEnvironment = process.env;');
     expect(entry).toContain('return runRelease(release, deps, config, env);');
+  });
+});
+
+const PROCESS_MODULES = new Set(['process', 'node:process']);
+const GLOBAL_OBJECTS = new Set(['globalThis', 'global', 'self', 'window']);
+
+/** The literal text of a string or no-substitution template, or undefined when the key is computed. */
+function literalText(node: ts.Node): string | undefined {
+  return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
+    ? node.text
+    : undefined;
+}
+
+interface SourceScan {
+  /** Accesses to `process.env` (or `process['env']`) in this file. */
+  envReads: number;
+  /** Every other route to the environment, or to `process` itself, that fails closed. */
+  findings: string[];
+}
+
+/**
+ * Walks the TypeScript AST of one file. A bare `process` (alias, destructuring, argument, cast,
+ * `globalThis.process` property) is a finding; `process.<name>` is a read only for `env`; a computed key
+ * on `process` or on a global object is a finding; a module specifier naming `process` is a finding; and
+ * `eval` or `Function(...)` is a finding, since either can rebuild the same access from a string.
+ */
+function scanSource(file: string, text: string): SourceScan {
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const scan: SourceScan = { envReads: 0, findings: [] };
+  const flag = (node: ts.Node, form: string) => {
+    const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+    scan.findings.push(`${file}:${line} ${form}`);
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && node.text === 'process') {
+      const parent = node.parent;
+      if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+        if (parent.name.text === 'env') scan.envReads += 1;
+      } else if (ts.isElementAccessExpression(parent) && parent.expression === node) {
+        const key = literalText(parent.argumentExpression);
+        if (key === 'env') scan.envReads += 1;
+        else if (key === undefined) flag(node, 'computed key on process');
+      } else {
+        flag(node, 'bare process');
+      }
+    }
+    if (
+      (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+      PROCESS_MODULES.has(node.text)
+    ) {
+      flag(node, `module specifier ${node.text}`);
+    }
+    if (
+      ts.isElementAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      GLOBAL_OBJECTS.has(node.expression.text) &&
+      literalText(node.argumentExpression) === undefined
+    ) {
+      flag(node, 'computed key on a global object');
+    }
+    if (ts.isIdentifier(node) && node.text === 'eval') flag(node, 'eval');
+    if (
+      (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'Function'
+    ) {
+      flag(node, 'Function constructor');
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return scan;
+}
+
+/**
+ * Whether a source file reaches the process environment other than through processEntry.ts: any
+ * finding, or any `process.env` read outside the one entry.
+ */
+function flagsEnvironmentRead(file: string, text: string): boolean {
+  const scan = scanSource(file, text);
+  return scan.findings.length > 0 || (scan.envReads > 0 && file !== 'processEntry.ts');
+}
+
+describe('sabotage: each route to the environment off process is caught', () => {
+  it.each([
+    ['process.env', 'const e = process.env;'],
+    ["process['env']", "const e = process['env'];"],
+    ['process["env"]', 'const e = process["env"];'],
+    ['process[`env`]', 'const e = process[`env`];'],
+    ['optional chain', 'const e = process?.env;'],
+    ['destructured env', 'const { env } = process;'],
+    ['renamed destructured env', 'const { env: e } = process;'],
+    [
+      'named import of env from node:process',
+      "import { env } from 'node:process';\nconst e = env;",
+    ],
+    ['named import of env from process', "import { env } from 'process';\nconst e = env;"],
+    ['namespace import then .env', "import * as p from 'node:process';\nconst e = p.env;"],
+    ['dynamic import of node:process', "const p = await import('node:process');\nconst e = p.env;"],
+    ["globalThis['process'].env", "const e = globalThis['process'].env;"],
+    ['computed key on globalThis', "const e = globalThis[['pro', 'cess'].join('')].env;"],
+    ['Reflect.get', "const e = Reflect.get(process, 'env');"],
+    ['alias of process', 'const p = process;\nconst e = p.env;'],
+    ['type cast', 'const e = (process as any).env;'],
+    ['computed key on process', "const k = 'env';\nconst e = process[k];"],
+    ['eval through a global', "const e = eval('this').process?.['env'];"],
+    ['Function constructor', "const e = Function('return this')().process?.['env'];"],
+  ])('flags %s outside processEntry.ts', (_form, source) => {
+    expect(flagsEnvironmentRead('someOtherFile.ts', source)).toBe(true);
+  });
+
+  it('does not flag ordinary process use (control)', () => {
+    expect(
+      flagsEnvironmentRead('someOtherFile.ts', 'process.exitCode = 1;\nprocess.on("exit", f);')
+    ).toBe(false);
   });
 });
