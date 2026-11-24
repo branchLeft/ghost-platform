@@ -609,7 +609,19 @@ test('the OpenSSL exemption check fails when the scope is widened or the expiry 
     );
     return JSON.stringify(copy);
   };
+  // The demo-gate entries carry their own dates: a demo-gate entry given the
+  // tenant and portal dates (granted 2026-11-23, expiring 2026-12-23) must fail.
+  const mutateDemoGate = (change) => {
+    const copy = structuredClone(real);
+    change(
+      copy.exemptions,
+      copy.exemptions.findIndex((e) => e.image === DEMO_GATE_IMAGE)
+    );
+    return JSON.stringify(copy);
+  };
   const cases = [
+    [mutateDemoGate((all, i) => (all[i].expires = '2026-12-23')), 'does not expire on 2026-12-24'],
+    [mutateDemoGate((all, i) => (all[i].granted = '2026-11-23')), 'is not granted on 2026-11-24'],
     [
       mutate((all) => all.push({ ...sample, vulnerability: 'CVE-2026-107496' })),
       'outside the five',
