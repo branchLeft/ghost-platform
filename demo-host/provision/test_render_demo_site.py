@@ -630,5 +630,54 @@ class CommandLineTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, 2)
 
 
+def federation_routes(section: list[str]) -> list[str]:
+    """The lines of one slot's section that name a federation path, outside
+    the renderer's own refusal. Anything left is a route the demo host serves."""
+    refusal = {line.strip() for line in rds.render_federation_refusal()}
+    return [
+        line.strip() for line in section
+        if line.strip() not in refusal and any(path in line for path in rds.FEDERATION_PATHS)
+    ]
+
+
+class FederationRefusalTests(unittest.TestCase):
+    def setUp(self):
+        self.text = two_slots()
+
+    def test_every_slot_refuses_every_federation_path(self):
+        for slot in ("0", "1"):
+            section = "\n".join(line.strip() for line in slot_section(self.text, slot))
+            with self.subTest(slot=slot):
+                self.assertIn(
+                    "@federationPaths path /.ghost/activitypub* /.well-known/webfinger* /.well-known/nodeinfo*",
+                    section,
+                )
+                self.assertIn("respond @federationPaths 404", section)
+
+    def test_the_refusal_sits_before_the_gate(self):
+        for slot in ("0", "1"):
+            lines = [line.strip() for line in slot_section(self.text, slot)]
+            with self.subTest(slot=slot):
+                self.assertLess(lines.index("respond @federationPaths 404"),
+                                lines.index("@gateOwn path /__gate/login /__gate/enter"))
+
+    def test_no_federation_route_is_served_outside_the_refusal(self):
+        for slot in ("0", "1"):
+            with self.subTest(slot=slot):
+                self.assertEqual(federation_routes(slot_section(self.text, slot)), [])
+
+    def test_a_route_added_in_a_scratch_copy_is_found_by_the_same_assertion(self):
+        section = slot_section(self.text, "0") + [
+            "\thandle /.ghost/activitypub* {",
+            "\t\treverse_proxy 127.0.0.1:1",
+            "\t}",
+        ]
+        self.assertEqual(federation_routes(section), ["handle /.ghost/activitypub* {"])
+
+    def test_the_refusal_is_the_only_federation_text_in_the_slot_body(self):
+        body = rds.render_slot_body("0", EDGE)
+        self.assertEqual(federation_routes(body), [])
+
+
 if __name__ == "__main__":
     unittest.main()
