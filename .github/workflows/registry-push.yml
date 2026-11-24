@@ -211,3 +211,59 @@ jobs:
           digest: ${{ needs.push.outputs.digest }}
           signer-workflow: branchLeft/ghost-platform/.github/workflows/registry-push.yml
           repo: branchLeft/ghost-platform
+
+  # Records the digest that passed the scan and the attestation as one gauge
+  # on the `state/tenant-image` branch, which the monitoring host scrapes to
+  # tell a tenant slot that runs an older image from the newest one. It runs
+  # only after both, so an image that failed either is never published as the
+  # newest. The branch carries no ruleset, so the commit needs no PR and no
+  # signature (the release watcher does the same on `state/release-watcher`).
+  # `contents: write` is held by this job alone; the job reads the digest the
+  # push job read from the image store, never a tag. scripts/tenant_image_gauge.py.
+  gauge:
+    name: Publish the attested digest as a gauge
+    needs: [push, scan, attest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      DIGEST: ${{ needs.push.outputs.digest }}
+      STATE_WORKTREE: ${{ github.workspace }}/../tenant-image-state
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+
+      - name: Fetch the state branch, or create it as an orphan
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin state/tenant-image > /dev/null; then
+            git fetch origin state/tenant-image
+            git worktree add "$STATE_WORKTREE" origin/state/tenant-image --detach
+          else
+            git worktree add --detach "$STATE_WORKTREE"
+            (
+              cd "$STATE_WORKTREE"
+              git checkout --orphan state/tenant-image
+              git rm -r -f --quiet --ignore-unmatch .
+            )
+          fi
+
+      - name: Write the gauge
+        run: python3 scripts/tenant_image_gauge.py --digest "$DIGEST" --metrics "$STATE_WORKTREE/tenant-image.prom"
+
+      - name: Commit the gauge
+        working-directory: ${{ env.STATE_WORKTREE }}
+        run: |
+          set -euo pipefail
+          git add tenant-image.prom
+          if [ "$(git ls-files)" != "tenant-image.prom" ]; then
+            echo "::error::the state branch must track only tenant-image.prom"
+            exit 1
+          fi
+          git commit -m "tenant-image: record attested digest"
+          git push origin HEAD:refs/heads/state/tenant-image

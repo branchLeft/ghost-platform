@@ -236,6 +236,11 @@ jobs:
       - name: Workflow permissions test
         run: python3 -m unittest discover -s scripts -p 'test_workflow_permissions.py'
 
+      # The tenant image gauge's writer, and the registry-push job that runs it
+      # only after the scan and the attestation, with the one contents grant.
+      - name: Tenant image gauge tests
+        run: python3 -m unittest discover -s scripts -p 'test_tenant_image_gauge.py'
+
       - name: Apply-gate operands on the ghost-platform calls
         run: python3 -m unittest discover -s scripts -p 'test_apply_gate_operands.py' -v
 
