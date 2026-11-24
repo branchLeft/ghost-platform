@@ -126,3 +126,8 @@ rollback-proof/live-schema.mjs
 # Operational check: the media erasure job reads the gateway write ledger's SQLite copy read-only, and its test builds one.
 infra/provisioning/scripts/erase_tenant_media.py
 infra/provisioning/scripts/test_erase_tenant_media.py
+
+# The ActivityPub contract harness: creates the throwaway accounts and grants of a
+# disposable database server and reads its catalogue back, to prove which privileges
+# the upstream service's migrate image and the service itself need.
+scripts/activitypub-contract/database.py
