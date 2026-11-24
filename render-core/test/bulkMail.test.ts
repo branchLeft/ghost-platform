@@ -204,6 +204,17 @@ describe('validate() -- mail.bulk', () => {
     expect(error).toBeInstanceOf(FieldValidationError);
   });
 
+  it.each([
+    ['endpoint', { ...BULK, endpoint: 'https://user:s3cr3t-TOKEN-value@bulk.endpoint.example/x' }],
+    ['domain', { ...BULK, domain: 's3cr3t-TOKEN-value/with a slash' }],
+    ['credentialRef', { ...BULK, credentialRef: 's3cr3t-TOKEN-value' }],
+    ['a stray key', { ...BULK, apiKey: 's3cr3t-TOKEN-value' }],
+  ])('a secret-looking value in %s is never echoed in the refusal', (_label, bulk) => {
+    const error = refusalOf(() => validate(withBulk(entryTenantDescriptor(), bulk), TEST_ZONES));
+    expect(error).toBeInstanceOf(FieldValidationError);
+    expect(String((error as Error).message)).not.toContain('s3cr3t');
+  });
+
   it('refuses it on a demo', () => {
     const error = refusalOf(() => validate(withBulk(demoDescriptor(), BULK), TEST_ZONES));
     expect(error).toBeInstanceOf(TierMismatchError);

@@ -186,11 +186,14 @@ Member mail is addressed through a Ghost *setting*
 
 ## Social web lock
 
-`hostSettings__limits__limitSocialWeb__disabled` is `true` for every kind and
-every cap, so Ghost locks the ActivityPub setting and the admin's Network tab
-is absent. It is unconditional, unlike the member and staff caps, which
-render only when set. `settings.ts` also turns `social_web` off, because a
-lock does not undo what an existing tenant already has.
+`hostSettings__limits__limitSocialWeb__disabled` is `true` unless the
+descriptor's `activitypub` field says `on`. `federationEnvironment()` owns the
+key: off (or absent) renders it, so Ghost locks the ActivityPub setting and the
+admin's Network tab is absent; `on` omits the key, so Ghost keeps its own
+default. It is unconditional, unlike the member and staff caps, which render
+only when set. `settings.ts` sets `social_web` to the same switch, because a
+lock does not undo what an existing tenant already has. A demo may never say
+`on`: `validate()` refuses it, so no demo renders with federation.
 
 ## Stripe connect limit
 

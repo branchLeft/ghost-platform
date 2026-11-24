@@ -213,6 +213,7 @@ const DESCRIPTOR_KEYS = [
   'breakGlass',
   'expiresAt',
   'analytics',
+  'activitypub',
 ] as const;
 /** `DESCRIPTOR_KEYS` without `ownerEmail`: see validateTenantStack. */
 const STACK_DESCRIPTOR_KEYS = DESCRIPTOR_KEYS.filter((key) => key !== 'ownerEmail');
@@ -781,14 +782,14 @@ function validateBulkMail(descriptor: TenantStackDescriptor): void {
   if (bulk.domain.length > MAX_BULK_DOMAIN_LENGTH || !BULK_DOMAIN_PATTERN.test(bulk.domain)) {
     throw new FieldValidationError(
       'mail.bulk.domain',
-      `mail.bulk.domain "${bulk.domain}" must be 1 to ${MAX_BULK_DOMAIN_LENGTH} characters: ` +
+      `mail.bulk.domain must be 1 to ${MAX_BULK_DOMAIN_LENGTH} characters: ` +
         `letters, digits, ".", "_" and "-", starting with a letter or digit.`
     );
   }
   if (!BULK_CREDENTIAL_REF_PATTERN.test(bulk.credentialRef)) {
     throw new FieldValidationError(
       'mail.bulk.credentialRef',
-      `mail.bulk.credentialRef "${bulk.credentialRef}" must be a secrets-file key: ` +
+      `mail.bulk.credentialRef must be a secrets-file key (value withheld): ` +
         `"GHOST_BULK_" then 1 to 48 upper-case letters, digits or "_".`
     );
   }
@@ -806,7 +807,7 @@ function assertBulkEndpoint(endpoint: string): void {
   if (origin === '' || origin !== endpoint) {
     throw new FieldValidationError(
       'mail.bulk.endpoint',
-      `mail.bulk.endpoint "${endpoint}" must be an https origin: scheme and host (and an ` +
+      `mail.bulk.endpoint must be an https origin (value withheld): scheme and host (and an ` +
         `optional port) with no userinfo, path, query or fragment, and no trailing "/".`
     );
   }
@@ -1683,6 +1684,20 @@ function validateAnalytics(descriptor: TenantStackDescriptor): void {
   }
 }
 
+/**
+ * Federation is off unless the descriptor says `on`. A demo may never say
+ * `on`: no demo renders with the Network setting unlocked (environment.md#social-web-lock).
+ */
+function validateActivityPub(descriptor: TenantStackDescriptor): void {
+  const activitypub = descriptor.activitypub;
+  if (activitypub === undefined || activitypub.kind === 'off') {
+    return;
+  }
+  if (descriptor.kind === 'demo') {
+    throw new FieldValidationError('activitypub', 'a demo descriptor may not turn federation on.');
+  }
+}
+
 function validateFields(
   descriptor: TenantStackDescriptor,
   zones: ZoneConfig,
@@ -1738,6 +1753,7 @@ function validateFields(
   validateHostname(descriptor.hostname, zones, descriptor.slug, options.claimantRepo);
   validateGate(descriptor.gate);
   validateAnalytics(descriptor);
+  validateActivityPub(descriptor);
   validateCodeInjection(descriptor.codeInjection);
   validateBreakGlass(descriptor.breakGlass);
   if (descriptor.expiresAt !== null) {

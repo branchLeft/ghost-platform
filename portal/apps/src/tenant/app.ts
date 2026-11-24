@@ -5,7 +5,12 @@ import {
   ROLE_TENANT_ADMIN,
 } from 'ghost-platform-identity/dist/index.js';
 import type { TokenVerifierOptions } from 'ghost-platform-identity/dist/index.js';
-import { TenantDb, type DocumentKind, type TenantScope } from 'ghost-platform-portal-data/tenant';
+import {
+  TenantDb,
+  parseFederationForm,
+  type DocumentKind,
+  type TenantScope,
+} from 'ghost-platform-portal-data/tenant';
 import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { renderErasure } from '../shell/erasureHtml.js';
@@ -19,6 +24,7 @@ import {
   renderFaqPage,
 } from './explainerPages.js';
 import { createDemoRoutes } from './demoScreen.js';
+import { federationBody } from './federationSettings.js';
 import { moderationBody, saveModeration } from './moderationSettings.js';
 import { createPromotionRoutes } from './promotionRoutes.js';
 import type { ProvisioningSettings } from './provisioningSettings.js';
@@ -127,6 +133,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_HOME', href: '/' },
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
+      { label: 'NAV_FEDERATION', href: '/federation' },
       { label: 'NAV_SITE_ACCESS', href: '/site-access' },
       { label: 'NAV_ERASURE', href: '/erasure' },
       ...demo.nav,
@@ -172,6 +179,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
           (bound) => options.db.ownKind(bound),
           (bound) => options.db.moderationSettings(bound)
         )) + support.linkFrom('MODERATION'),
+      '/federation': async (scope) => federationBody(scope, options.db),
       '/site-access': async (scope) => {
         const [access, request] = await Promise.all([
           options.db.ownSupportAccess(scope, now()),
@@ -211,6 +219,16 @@ export function createTenantPortal(options: TenantPortalOptions) {
           now: now(),
         });
         return '/moderation';
+      },
+      // The switch the page posts. The tenant is the session's; the store reads
+      // the tenant's own kind in the same transaction and refuses a demo slot.
+      '/federation/save': async (scope, identity, form) => {
+        await options.db.saveFederation(
+          scope,
+          { enabled: parseFederationForm(form), updatedBy: identity.subject },
+          now()
+        );
+        return '/federation';
       },
       // The only thing the page can do: file the signed-in tenant's request.
       // It reads no field of the form, so nothing the visitor sends reaches it.

@@ -600,6 +600,22 @@ function analyticsEnvironment(
   };
 }
 
+/** True only for an explicit `on`; an absent activitypub field is off. */
+export function federationOn(descriptor: Pick<TenantDescriptor, 'activitypub'>): boolean {
+  return descriptor.activitypub?.kind === 'on';
+}
+
+/**
+ * The federation keys, owned here so every reconciler renders them the same
+ * way. Off locks Ghost's ActivityPub setting (the key is absent when on, so
+ * Ghost keeps its own default). See environment.md#social-web-lock.
+ */
+export function federationEnvironment(
+  descriptor: Pick<TenantDescriptor, 'activitypub'>
+): Record<string, boolean> {
+  return federationOn(descriptor) ? {} : { hostSettings__limits__limitSocialWeb__disabled: true };
+}
+
 /**
  * The `environment:` block of the rendered Compose service, for every kind.
  * `secretsFilePath` only appears inside a `${…:?}` reference's own failure
@@ -609,6 +625,7 @@ export function tenantEnvironment(
   descriptor: Pick<
     TenantDescriptor,
     | 'analytics'
+    | 'activitypub'
     | 'slug'
     | 'uid'
     | 'kind'
@@ -640,13 +657,10 @@ export function tenantEnvironment(
 
     security__allowWebhookInternalIPs: false,
 
-    // Locks the ActivityPub setting off for every tenant: the admin's Network
-    // tab is that feature's surface and nothing serves the paths it calls, so
-    // it would only ever show an error. Ghost reads this flag from config
-    // only, and unlike a cap it is unconditional, so it is not part of
-    // `hostLimitsEnvironment`. `settings.ts` sets `social_web` off as well,
-    // because the lock does not remove what an existing tenant already has.
-    hostSettings__limits__limitSocialWeb__disabled: true,
+    // The ActivityPub lock: on for every tenant unless the descriptor says
+    // `on` (federationEnvironment). Ghost reads it from config only, so it is
+    // not part of `hostLimitsEnvironment`.
+    ...federationEnvironment(descriptor),
     ...hostStripeEnvironment(descriptor.kind),
 
     theme__uploadLimits__compressedBytes: limits.themeCompressedBytes,
