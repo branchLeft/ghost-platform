@@ -1,0 +1,27 @@
+# The shared branchLeft lint policy (SYNC-1) with the findings this harness answers by design.
+line-length = 100
+target-version = "py312"
+
+[lint]
+preview = true
+explicit-preview-rules = true
+extend-select = ["TRY", "BLE", "N", "ANN", "S", "DOC501", "I", "F", "B", "UP"]
+ignore = [
+    # The harness drives the docker command line; that is its whole job.
+    "S603",
+    "S607",
+    # Fixed test values for throwaway database servers that live for one run.
+    "S105",
+    "S106",
+    # Statements for a throwaway database server, in declared database tooling (DB-1).
+    "S608",
+    # A failure message names the command and its output; a class per message adds nothing.
+    "TRY003",
+    "EM101",
+    "EM102",
+    # The docstring lists what a caller must handle; the module's own error types say so.
+    "DOC501",
+]
+
+[lint.per-file-ignores]
+"test_contract.py" = ["S101"]
