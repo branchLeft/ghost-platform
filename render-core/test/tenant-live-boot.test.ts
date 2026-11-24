@@ -66,15 +66,18 @@ function renderedCompose(): string {
   return compose.content;
 }
 
-/** Replace `from` with `to`, asserting the control: `from` occurs exactly once. */
-function replaceOnce(text: string, from: string, to: string): string {
+/**
+ * Replace every `from` with `to`, asserting the control: `from` occurs exactly
+ * `expected` times (the render gives ghost-a and ghost-b the same database host).
+ */
+function replaceExactly(text: string, from: string, to: string, expected: number): string {
   const occurrences = text.split(from).length - 1;
-  if (occurrences !== 1) {
+  if (occurrences !== expected) {
     throw new Error(
-      `expected exactly one ${JSON.stringify(from)} in the rendered compose.yml, found ${occurrences}`
+      `expected ${expected} of ${JSON.stringify(from)} in the rendered compose.yml, found ${occurrences}`
     );
   }
-  return text.replace(from, to);
+  return text.split(from).join(to);
 }
 
 /** The throwaway MySQL service the rendered Ghost reaches as host `db`. */
@@ -95,13 +98,14 @@ const DB_SERVICE = `  db:
 /** The rendered compose.yml, with only the CI substitutions applied. */
 function bootComposeText(): string {
   let text = renderedCompose();
-  text = replaceOnce(text, "'10.20.1.100:8101:2368'", `'127.0.0.1:${LOOPBACK_PORT}:2368'`);
-  text = replaceOnce(
+  text = replaceExactly(text, "'10.20.1.100:8101:2368'", `'127.0.0.1:${LOOPBACK_PORT}:2368'`, 1);
+  text = replaceExactly(
     text,
     "database__connection__host: '10.20.1.20'",
-    "database__connection__host: 'db'"
+    "database__connection__host: 'db'",
+    2
   );
-  text = replaceOnce(text, '\nnetworks:\n', `\n${DB_SERVICE}networks:\n`);
+  text = replaceExactly(text, '\nnetworks:\n', `\n${DB_SERVICE}networks:\n`, 1);
   return text;
 }
 
