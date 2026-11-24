@@ -246,7 +246,10 @@ class NoRealMailTests(unittest.TestCase):
         decision = decide(evidence, ready_state(), clock)
         self.assertEqual(decision.action, Action.WAIT)
         self.assertEqual(decision.reasons[0], "no_real_mail")
-        self.assertEqual(decision.state, ready_state())
+        # Nothing moves but the day read through.
+        self.assertEqual(
+            decision.state, dataclasses.replace(ready_state(), evaluated_through=YESTERDAY)
+        )
 
     def test_seed_mail_alone_never_advances(self) -> None:
         evidence = clean_evidence(real=0, seed=100)

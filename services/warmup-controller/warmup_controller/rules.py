@@ -30,6 +30,7 @@ EXERCISE_DAYS_REQUIRED = 4
 REJECTION_CLUSTER = 5
 BLOCKLIST_RESUME_HOURS = 24
 STEP_DOWN_WINDOW_DAYS = 7
+STOP_LOOKBACK_DAYS = 7
 STEP_DOWN_DEFERRALS = 2
 POSTMASTER_REQUIRED_FROM_STAGE = 4
 DMARC_REQUIRED_PCT = 100.0
@@ -66,6 +67,14 @@ def stale_feeds(evidence: Evidence, now: datetime) -> tuple[str, ...]:
     return tuple(problems)
 
 
+def stop_days(today: date, evaluated_through: date | None) -> tuple[date, ...]:
+    """The complete days a stop reads: every day after the last one a run read, or the last week on a first run."""
+    if evaluated_through is None:
+        return window(today, STOP_LOOKBACK_DAYS)
+    count = (today - timedelta(days=1) - evaluated_through).days
+    return tuple(evaluated_through + timedelta(days=offset) for offset in range(1, count + 1))
+
+
 def deferrals_on(evidence: Evidence, when: date) -> tuple[Deferral, ...]:
     return tuple(d for d in evidence.deferrals if d.at.date() == when)
 
@@ -100,17 +109,20 @@ def effective_cap(stage: int, evidence: Evidence, today: date) -> int:
     return min(caps_for(stage).total, proven_ceiling(evidence, today))
 
 
-def stop_reasons(evidence: Evidence, today: date) -> tuple[str, ...]:
-    """Stop-class conditions present in the evidence, whatever its age."""
+def stop_reasons(
+    evidence: Evidence, today: date, evaluated_through: date | None
+) -> tuple[str, ...]:
+    """Stop-class conditions in the evidence: the current listing, and any day since the last run's read."""
+    days = [evidence.day(when) for when in stop_days(today, evaluated_through)]
     reasons: list[str] = []
-    if evidence.blocklisted_now:
+    if evidence.blocklisted_now or any(day.blocklisted for day in days):
         reasons.append(BLOCKLIST)
     if (
         evidence.gmail_spam_rate_pct is not None
         and evidence.gmail_spam_rate_pct >= GMAIL_SPAM_STOP_AT_PCT
     ):
         reasons.append(GMAIL_SPAM_RATE)
-    if evidence.day(today - timedelta(days=1)).rejections_5_7 >= REJECTION_CLUSTER:
+    if any(day.rejections_5_7 >= REJECTION_CLUSTER for day in days):
         reasons.append(REJECTION_CLUSTER_REASON)
     if evidence.seed_placement == SeedPlacement.SPAM:
         reasons.append(SEED_IN_SPAM)

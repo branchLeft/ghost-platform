@@ -33,13 +33,27 @@ def decide(
 ) -> Decision:
     """Advance, hold, wait, step down, stop or resume. Bad evidence holds; it never raises.
 
+    The decision's state records that every complete day before today has been read.
+
     Raises:
         NaiveClockError: the clock returned a datetime with no timezone.
     """
     owner = cards if cards is not None else OwnerCards()
     now = _utc(clock())
     today = now.date()
-    stops = rules.stop_reasons(evidence, today)
+    decision = _decide(evidence, state, owner, now, today)
+    read_through = today - timedelta(days=1)
+    return replace(decision, state=replace(decision.state, evaluated_through=read_through))
+
+
+def _decide(
+    evidence: Evidence,
+    state: ControllerState,
+    owner: OwnerCards,
+    now: datetime,
+    today: date,
+) -> Decision:
+    stops = rules.stop_reasons(evidence, today, state.evaluated_through)
     stale = rules.stale_feeds(evidence, now)
 
     if state.held:

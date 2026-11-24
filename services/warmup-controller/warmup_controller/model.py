@@ -114,6 +114,8 @@ class ControllerState:
     stopped_at: datetime | None = None
     stop_reasons: tuple[str, ...] = ()
     last_step_down_at: datetime | None = None
+    # The last complete UTC day a run has read. A stop reads the days after it, so each day counts once.
+    evaluated_through: date | None = None
 
 
 @dataclass(frozen=True)

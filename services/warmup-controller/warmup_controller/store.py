@@ -153,6 +153,9 @@ def state_to_json(state: ControllerState) -> JsonObject:
         "stoppedAt": _iso(state.stopped_at),
         "stopReasons": list(state.stop_reasons),
         "lastStepDownAt": _iso(state.last_step_down_at),
+        "evaluatedThrough": None
+        if state.evaluated_through is None
+        else state.evaluated_through.isoformat(),
     }
 
 
@@ -186,6 +189,9 @@ def state_from_json(raw: object) -> ControllerState:
         stopped_at=_moment(raw.get("stoppedAt"), "stoppedAt"),
         stop_reasons=tuple(str(reason) for reason in reasons),
         last_step_down_at=_moment(raw.get("lastStepDownAt"), "lastStepDownAt"),
+        evaluated_through=None
+        if raw.get("evaluatedThrough") is None
+        else _date(raw.get("evaluatedThrough"), "evaluatedThrough"),
     )
 
 

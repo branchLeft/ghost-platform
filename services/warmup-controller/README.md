@@ -18,19 +18,19 @@ Python because the controller is a timer-run script on the mail host, not a serv
 ## The files
 
 - **Collector file** (`published_state`): `stage`, `held`, `destinationHolds`, as the collector's `parseIp2State` reads them, plus `effectiveCap`, the stage cap held down to proven volume. The collector ignores keys it does not know.
-- **Controller state** (`controller_state`): the controller's own memory (when the stage began, the stop and its reasons, the last step down). The collector never reads it. A file that is there and cannot be read exactly stops the run before any write.
-- **Ledger** (`ledger`): JSON lines, appended only. One `daily` row per UTC day, and an `event` row for a step down, stop or resume on a day that already has its row. A second `daily` row for a day, or a ledger with a half-written or unreadable line, is refused and nothing is written. The ledger is written first: a run that cannot record why changes no state.
+- **Controller state** (`controller_state`): the controller's own memory (when the stage began, the stop and its reasons, the last step down, the last day read). The collector never reads it. A file that is there and cannot be read exactly stops the run before any write.
+- **Ledger** (`ledger`): JSON lines, appended only. One `daily` row per UTC day, and an `event` row for a step down, stop or resume on a day that already has its row. A second `daily` row for a day, or a ledger with a half-written or unreadable line, is refused and nothing is written. The ledger is written first: a run that cannot record why changes no state. The one exception is a stop or step down: it is protective, so its collector file is written first and a ledger fault there comes back as the `ledger_unwritable` alert.
 
 ## What decides
 
 Evidence for a run at time T covers the complete UTC days before T's day. A stopped lane first looks for a resume. Otherwise, in order:
 
-1. **Stop** (`held: true`): IP2 on a blocklist; Gmail spam rate 0.30 percent or over; 5 or more 5.7.x rejections on the newest day; a seed in spam. Acts on whatever evidence it has, however old.
+1. **Stop** (`held: true`): IP2 listed now, or listed on any day since the last run; Gmail spam rate 0.30 percent or over (any age: a stop acts on what it has); 5 or more 5.7.x rejections on any day since the last run; a seed in spam. "Since the last run" is the days after `evaluatedThrough`, so each day is read once; on a first run, the last 7 days.
 2. **Step down**: a receiver's second 4.7.28, 451 4.7.650 or Yahoo TS deferral within 7 days drops one stage. Only deferrals after the last step down count, so the same two never step down twice.
 3. **Wait**: the newest day had no real mail. Nothing moves; the ledger row says `wait`.
 4. **Advance** when every gate passes, once a UTC day; otherwise **hold**, with the failing gates named. A hold on a bounce, spam-rate, deferral, seed or DMARC gate restarts the stage's 7-day window. A hold for too few days, too little real mail, a missing feed or no data does not.
 
-Advance gates: 7 days at the stage; hard bounces under 2 percent of the week's real mail; Gmail spam rate under 0.10 percent (Postmaster data required from stage 4); no deferral in 72 hours; not blocklisted; seed placement recorded as inbox; DMARC alignment 100 percent; real mail at half the stage cap on at least 4 of the last 7 days; every feed under 48 hours old and present; not at stage 7; not already advanced today.
+Advance gates: a Gmail spam reading dated within 48 hours (an undated or older one is stale and holds); 7 days at the stage; hard bounces under 2 percent of the week's real mail; Gmail spam rate under 0.10 percent (Postmaster data required from stage 4); no deferral in 72 hours; not blocklisted; seed placement recorded as inbox; DMARC alignment 100 percent; real mail at half the stage cap on at least 4 of the last 7 days; every feed under 48 hours old and present; not at stage 7; not already advanced today.
 
 Effective cap: `min(stage cap, max(50, 1.5 x the highest clean real day in the last 14))`.
 
