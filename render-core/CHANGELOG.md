@@ -2,8 +2,13 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
-## Unreleased
+## 0.8.0
 
+- **Additive:** a named sending-domain exception for tenant zero. The owned-domain refusal now allows
+  exactly `blog.branchleft.co.uk`, for the tenant whose register name is `blog` and whose claimant
+  repository is that entry's repository, in both `mail.identity.domain` and `hostname.fqdn`. A
+  subdomain, a sibling or any other tenant on an owned domain is still refused. The exception is in
+  code, not configuration. `validate.md` documents it.
 - **Fixed:** `assertRuntimePosture()` refuses a non-sidecar service that mounts a verdict or journal
   volume at any target, in short or long syntax, and `volumes_from` is a forbidden service key. The
   check keyed on the mount target only, so `ghost-<slug>-verdict:/elsewhere` and `volumes_from:
