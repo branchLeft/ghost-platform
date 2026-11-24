@@ -23,12 +23,14 @@ on:
     paths:
       - services/activitypub/**
       - .github/workflows/activitypub-image.yml
+      - workflow-activitypub-image.test.ts
   workflow_dispatch:
   pull_request:
     branches: [main]
     paths:
       - services/activitypub/**
       - .github/workflows/activitypub-image.yml
+      - workflow-activitypub-image.test.ts
 
 # Nothing here installs from GitHub Packages, and this workflow's top level
 # never requests a write credential: only the push and attest jobs below ask
@@ -58,6 +60,16 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # The workflow's own shape test runs first, under the repo's Node (.nvmrc),
+      # which runs the TypeScript directly.
+      - name: Set up Node for the workflow test
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Workflow shape test
+        run: node --test workflow-activitypub-image.test.ts
 
       # The one commit the build may use. It must be a full 40-digit SHA.
       - name: Read the upstream pin

@@ -29,10 +29,10 @@ const GUARD =
   "github.ref == 'refs/heads/main' &&\n      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')";
 
 // Whole-line comments go, so text inside a comment can never satisfy a check.
-export const withoutComments = (text) => text.replace(/^[ \t]*#.*$/gm, '');
+export const withoutComments = (text: string): string => text.replace(/^[ \t]*#.*$/gm, '');
 
 // The text of one job: from its `  name:` line to the next job or the end.
-export function jobText(text, name) {
+export function jobText(text: string, name: string): string {
   const jobs = text.slice(text.indexOf('\njobs:') + 1);
   const start = jobs.search(new RegExp(`^  ${name}:\\n`, 'm'));
   if (start === -1) return '';
@@ -42,16 +42,16 @@ export function jobText(text, name) {
 }
 
 // The lines of every `run:` body. A `${{ }}` inside one is refused (CI-2).
-export function runBodies(text) {
+export function runBodies(text: string): string[] {
   const lines = text.split('\n');
-  const bodies = [];
-  lines.forEach((line, i) => {
+  const bodies: string[] = [];
+  lines.forEach((line: string, i: number) => {
     const m = /^(\s*)run:/.exec(line);
     if (!m) return;
-    const indent = m[1].length;
-    const body = [];
+    const indent = m[1]!.length;
+    const body: string[] = [];
     for (let j = i + 1; j < lines.length; j++) {
-      const l = lines[j];
+      const l = lines[j] ?? '';
       if (l.trim() === '') {
         body.push(l);
         continue;
@@ -64,12 +64,12 @@ export function runBodies(text) {
   return bodies;
 }
 
-const pinned = (text) => /^commit=([0-9a-f]{40})$/m.exec(text)?.[1] ?? null;
+const pinned = (text: string): string | null => /^commit=([0-9a-f]{40})$/m.exec(text)?.[1] ?? null;
 
-export function problems(workflow) {
-  const found = [];
+export function problems(workflow: string): string[] {
+  const found: string[] = [];
   const text = withoutComments(workflow);
-  const top = text.split(/^jobs:\n/m)[0];
+  const top = text.split(/^jobs:\n/m)[0] ?? '';
   if (/^\s*(\w+):\s*write(-all)?\s*$/m.test(top)) {
     found.push('top-level permissions grant a write scope');
   }
@@ -235,14 +235,14 @@ test('the upstream licence ships in each image through the overlay', () => {
 test('the publish package names are on the register as public', () => {
   const register = JSON.parse(fs.readFileSync(REGISTER, 'utf8'));
   for (const name of ['activitypub', 'activitypub-migrate']) {
-    const entry = register.packages.find((p) => p.name === name);
+    const entry = register.packages.find((p: { name: string }) => p.name === name);
     assert.ok(entry, `${name} is on the register`);
     assert.equal(entry.visibility, 'public');
   }
 });
 
 test('the checker reports each way the workflow can drift', () => {
-  const cases = [
+  const cases: [string, string][] = [
     [
       real.replace('permissions:\n  contents: read', 'permissions:\n  contents: write'),
       'top-level permissions grant a write scope',
