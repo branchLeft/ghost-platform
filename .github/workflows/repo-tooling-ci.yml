@@ -214,8 +214,12 @@ jobs:
       # wildcard anywhere -- so these tests assert the generated text
       # directly rather than trusting the generator's own logic to be
       # self-evidently right.
+      # The three classes that build a Docker image are gated off here by this
+      # variable and run in the `docker-proofs` job instead, so none is lost.
       - name: Demo host provisioning script tests
         run: python3 -m unittest discover -s demo-host/provision -p 'test_*.py'
+        env:
+          BRANCHLEFT_DOCKER_PROOFS_ELSEWHERE: '1'
 
       # The demo host mail spool workflow starts only on a path in its filter.
       # This derives the job's real inputs (render-core's build, the scripts it
@@ -411,3 +415,36 @@ jobs:
       - name: Unit tests
         if: ${{ hashFiles('services/warmup-controller/**') != '' }}
         run: python3 -m unittest discover -s services/warmup-controller -p 'test_*.py' -v
+
+  # The Docker image proofs that format-and-lint skips (see its demo host
+  # step). Runs exactly these three classes, by name, so the set is fixed here
+  # and no discovered test is skipped without being run in this job.
+  #
+  # Time budget, from demo-host/provision: the Tier 2 image build is 1500 s per
+  # attempt and IMAGE_BUILD_ATTEMPTS is 3, with backoff of 10 s and 30 s
+  # between them (75 min at most); the Tier 2 proof run is capped at 600 s; the
+  # wildcard image build is capped at 600 s. 75 + 10 + 10 = 95 min, so 100
+  # leaves room for checkout and set-up.
+  docker-proofs:
+    name: Docker image proofs
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      - name: Docker image proofs (Tier 2 and real Caddy)
+        working-directory: demo-host/provision
+        run: >-
+          python3 -m unittest -v
+          test_demo_edge_wildcard.RealCaddyWildcardTests
+          test_demo_edge_wildcard.DemoEdgeImageTests
+          test_demo_edge_tier2.RealCaPoweredTests

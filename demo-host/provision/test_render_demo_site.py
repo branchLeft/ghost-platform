@@ -12,11 +12,17 @@ import copy
 import io
 import ipaddress
 import json
+import os
 import pathlib
 import re
+import socket
+import subprocess
 import tempfile
+import time
 import unittest
-from typing import Any
+import urllib.error
+import urllib.request
+from typing import Any, Iterator
 
 import render_demo_edge as rde
 import render_demo_site as rds
@@ -79,7 +85,7 @@ class GateTests(unittest.TestCase):
         for slot in ("0", "1"):
             section = slot_section(text, slot)
             handles = [line.strip() for line in section if line.strip().startswith("handle")]
-            self.assertEqual(handles, ["handle @gateOwn {", "handle {"])
+            self.assertEqual(handles, ["handle @federationPaths {", "handle @gateOwn {", "handle {"])
             catch_all = "\n".join(section).split("\t\thandle {\n", 1)[1]
             self.assertLess(catch_all.index("forward_auth"), catch_all.index(f"import slot{slot}-upstream"))
             self.assertLess(catch_all.index("forward_auth"), catch_all.index("respond"))
@@ -327,7 +333,7 @@ class UploadGuardTests(unittest.TestCase):
     def test_the_guard_adds_no_handler(self):
         for slot in ("0", "1"):
             handles = [line.strip() for line in slot_section(self.text, slot) if line.strip().startswith("handle")]
-            self.assertEqual(handles, ["handle @gateOwn {", "handle {"])
+            self.assertEqual(handles, ["handle @federationPaths {", "handle @gateOwn {", "handle {"])
 
     def test_the_print_flag_prints_the_guard_alone(self):
         out = io.StringIO()
@@ -628,6 +634,229 @@ class CommandLineTests(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
                     rds.main(argv)
                 self.assertEqual(raised.exception.code, 2)
+
+
+def federation_routes(section: list[str]) -> list[str]:
+    """The lines of one slot's section that name a federation path, outside
+    the renderer's own refusal. Anything left is a route the demo host serves."""
+    refusal = {line.strip() for line in rds.render_federation_refusal()}
+    return [
+        line.strip() for line in section
+        if line.strip() not in refusal and any(path in line for path in rds.FEDERATION_PATHS)
+    ]
+
+
+class FederationRefusalTests(unittest.TestCase):
+    def setUp(self):
+        self.text = two_slots()
+
+    def test_every_slot_refuses_every_federation_path(self):
+        for slot in ("0", "1"):
+            section = "\n".join(line.strip() for line in slot_section(self.text, slot))
+            with self.subTest(slot=slot):
+                self.assertIn(
+                    "@federationPaths path /.ghost/activitypub* /.well-known/webfinger* /.well-known/nodeinfo*",
+                    section,
+                )
+                self.assertIn("handle @federationPaths {", section)
+                self.assertIn("respond 404", section)
+
+    def test_the_refusal_sits_before_the_gate(self):
+        for slot in ("0", "1"):
+            lines = [line.strip() for line in slot_section(self.text, slot)]
+            with self.subTest(slot=slot):
+                self.assertLess(lines.index("handle @federationPaths {"),
+                                lines.index("@gateOwn path /__gate/login /__gate/enter"))
+
+    def test_no_federation_route_is_served_outside_the_refusal(self):
+        for slot in ("0", "1"):
+            with self.subTest(slot=slot):
+                self.assertEqual(federation_routes(slot_section(self.text, slot)), [])
+
+    def test_a_route_added_in_a_scratch_copy_is_found_by_the_same_assertion(self):
+        section = slot_section(self.text, "0") + [
+            "\thandle /.ghost/activitypub* {",
+            "\t\treverse_proxy 127.0.0.1:1",
+            "\t}",
+        ]
+        self.assertEqual(federation_routes(section), ["handle /.ghost/activitypub* {"])
+
+    def test_the_refusal_is_the_only_federation_text_in_the_slot_body(self):
+        body = rds.render_slot_body("0", EDGE)
+        self.assertEqual(federation_routes(body), [])
+
+
+# The adapted config is what Caddy runs, so the refusal is proven on that, not on
+# the text: Caddy orders a `respond` after a `handle`, so a text-ordered refusal
+# can sit behind the slot's terminal catch-all and never answer. The image is the
+# pinned Caddy (v2.11.9 for the demo edge); the local tag is overridable.
+CADDY_BIN = os.environ.get("CADDY_BIN")
+CADDY_IMAGE = os.environ.get(
+    "CADDY_IMAGE",
+    "caddy:2.11.9-alpine@sha256:fc9cbc100585871d18d4e451cca7021785c90a7006087427ae5ceb3e4efe6424",
+)
+FEDERATION_SAMPLES = ("/.ghost/activitypub/inbox", "/.ghost/activitypub", "/.well-known/webfinger",
+                      "/.well-known/nodeinfo", "/.well-known/nodeinfo/2.0")
+CONTAINER_PORT = 18080
+
+
+def _docker_create(args: list[str], name: str) -> None:
+    """Containers get their input by copy, not bind mount: on this host a bind
+    mount leaves the container in Created."""
+    subprocess.run(["docker", "create", "--name", name, *args], check=True, capture_output=True, text=True)
+
+
+def _docker_copy_in(name: str, source: pathlib.Path, target: str) -> None:
+    subprocess.run(["docker", "cp", str(source), f"{name}:{target}"], check=True, capture_output=True)
+
+
+def caddy_adapt(text: str) -> dict[str, Any]:
+    """`caddy adapt` of the rendered Caddyfile: the binary at CADDY_BIN, or the
+    Caddy image with the file copied in."""
+    with tempfile.TemporaryDirectory() as tmp:
+        source = pathlib.Path(tmp, "Caddyfile")
+        source.write_text(text, encoding="utf-8")
+        if CADDY_BIN:
+            run = subprocess.run([CADDY_BIN, "adapt", "--config", str(source), "--adapter", "caddyfile"],
+                                 capture_output=True, text=True, check=False)
+        else:
+            name = f"caddy-adapt-{os.getpid()}-{time.monotonic_ns()}"
+            try:
+                _docker_create(["--entrypoint", "caddy", CADDY_IMAGE,
+                                "adapt", "--config", "/Caddyfile", "--adapter", "caddyfile"], name)
+                _docker_copy_in(name, source, "/Caddyfile")
+                run = subprocess.run(["docker", "start", "-a", name], capture_output=True, text=True, check=False)
+            finally:
+                subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
+    if run.returncode != 0:
+        raise AssertionError(f"caddy adapt failed: {run.stderr.strip()}")
+    return json.loads(run.stdout)
+
+
+@contextlib.contextmanager
+def caddy_serving(config: dict[str, Any], port: int) -> Iterator[None]:
+    """A running Caddy with `config` listening on 127.0.0.1:`port`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        payload = pathlib.Path(tmp, "config.json")
+        payload.write_text(json.dumps(config), encoding="utf-8")
+        if CADDY_BIN:
+            process = subprocess.Popen([CADDY_BIN, "run", "--config", str(payload)],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                yield
+            finally:
+                process.terminate()
+                process.wait(timeout=10)
+        else:
+            name = f"federation-proof-{port}"
+            try:
+                _docker_create(["-p", f"127.0.0.1:{port}:{CONTAINER_PORT}", "--entrypoint", "caddy", CADDY_IMAGE,
+                                "run", "--config", "/config.json"], name)
+                _docker_copy_in(name, payload, "/config.json")
+                subprocess.run(["docker", "start", name], check=True, capture_output=True, text=True)
+                yield
+            finally:
+                subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
+
+
+def route_lists(node: Any):
+    """Every `routes` list in an adapted config, at any depth."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "routes" and isinstance(value, list):
+                yield value
+            yield from route_lists(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from route_lists(item)
+
+
+def route_paths(route: Mapping[str, Any]) -> list[str]:
+    return [p for matcher in route.get("match", []) for p in matcher.get("path", [])]
+
+
+def is_federation(route: Mapping[str, Any]) -> bool:
+    return any(path.startswith(("/.ghost/activitypub", "/.well-known/webfinger", "/.well-known/nodeinfo"))
+               for path in route_paths(route))
+
+
+def static_status(route: Mapping[str, Any]) -> str | None:
+    """The status of the first `static_response` anywhere in one route's handler
+    tree. A matched route ends in one: Caddy's adapter sets no `terminal` flag."""
+    stack: list[Any] = [route.get("handle", [])]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("handler") == "static_response":
+                return str(node.get("status_code"))
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return None
+
+
+class FederationCaddyTests(unittest.TestCase):
+    """The refusal on real Caddy: the adapted route order, and what a running
+    Caddy answers. Needs CADDY_BIN or Docker with the Caddy image; it fails
+    rather than skips."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.host = rds._slot_host(EDGE, BASE)
+        cls.config = caddy_adapt(caddyfile())
+
+    def test_the_refusal_is_a_terminal_404_route_before_the_gate(self):
+        lists = [routes for routes in route_lists(self.config)
+                 if any(is_federation(route) for route in routes)]
+        self.assertEqual(len(lists), 1, "the federation refusal must sit in one slot's route list")
+        routes = lists[0]
+        fed = next(i for i, route in enumerate(routes) if is_federation(route))
+        gate = next(i for i, route in enumerate(routes) if "/__gate/login" in route_paths(route))
+        self.assertLess(fed, gate, "the refusal must come before the gate's own route")
+        self.assertEqual(static_status(routes[fed]), "404")
+
+    def test_no_federation_route_is_served_by_the_adapted_config(self):
+        federation = [route for routes in route_lists(self.config) for route in routes if is_federation(route)]
+        self.assertTrue(federation)
+        for route in federation:
+            with self.subTest(paths=route_paths(route)):
+                self.assertEqual(static_status(route), "404")
+
+    def test_a_running_caddy_answers_every_federation_path_with_404(self):
+        config = copy.deepcopy(self.config)
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        listen = f":{port}" if CADDY_BIN else f":{CONTAINER_PORT}"
+        for server in config["apps"]["http"]["servers"].values():
+            # The gate's upstream is 127.0.0.1:8080: Caddy must not listen there.
+            server["listen"] = [listen]
+            server["automatic_https"] = {"disable": True}
+        with caddy_serving(config, port):
+            self._wait_for(port)
+            for path in FEDERATION_SAMPLES:
+                with self.subTest(path=path):
+                    self.assertEqual(self._status(port, path), 404)
+            # Control: a path that is not federation is forwarded, not refused as 404.
+            self.assertNotEqual(self._status(port, "/ghost/"), 404)
+
+    def _status(self, port: int, path: str) -> int:
+        request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers={"Host": self.host})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status
+        except urllib.error.HTTPError as error:
+            return error.code
+
+    def _wait_for(self, port: int) -> None:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                self._status(port, "/")
+                return
+            except OSError:
+                time.sleep(0.5)
+        raise AssertionError("the Caddy did not start listening")
 
 
 if __name__ == "__main__":

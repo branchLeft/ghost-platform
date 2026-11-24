@@ -8,6 +8,7 @@ import {
   TENANT_A,
   TENANT_B,
   createFixture,
+  newAccount,
   rejection,
   rootMessage,
   type Fixture,
@@ -18,10 +19,12 @@ const NEWCOMER_ORG = 'org-newcomer';
 
 let fx: Fixture;
 let db: TenantDb;
+let newcomerAccount: string;
 
 beforeAll(async () => {
   fx = await createFixture();
   db = new TenantDb(fx.tenant);
+  newcomerAccount = await newAccount(fx.adminDb, NEWCOMER_ORG);
 });
 
 afterAll(async () => {
@@ -43,9 +46,12 @@ const SEEDED = [
 /** The tenant role's attempt at each write, made through the bound unit of work. */
 function insertOwnRow(): Promise<unknown> {
   return db.run(bindTenant(NEWCOMER), (tx) =>
-    tx
-      .insert(tenantRegister)
-      .values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG, kind: 'REAL' })
+    tx.insert(tenantRegister).values({
+      tenantId: NEWCOMER,
+      zitadelOrgId: NEWCOMER_ORG,
+      kind: 'REAL',
+      accountId: newcomerAccount,
+    })
   );
 }
 
@@ -122,9 +128,12 @@ describe('the register policy, with the writes granted for the test', () => {
     await withRegisterWrites(async () => {
       const error = await rejection(
         db.run(bindTenant(TENANT_A), (tx) =>
-          tx
-            .insert(tenantRegister)
-            .values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG, kind: 'REAL' })
+          tx.insert(tenantRegister).values({
+            tenantId: NEWCOMER,
+            zitadelOrgId: NEWCOMER_ORG,
+            kind: 'REAL',
+            accountId: newcomerAccount,
+          })
         )
       );
       expect(rootMessage(error)).toMatch(/row-level security policy for table "tenant_register"/);
@@ -163,9 +172,12 @@ describe('the register policy, with the writes granted for the test', () => {
   it('accepts a row for the bound tenant itself', async () => {
     await withRegisterWrites(async () => {
       await db.run(bindTenant(NEWCOMER), (tx) =>
-        tx
-          .insert(tenantRegister)
-          .values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG, kind: 'REAL' })
+        tx.insert(tenantRegister).values({
+          tenantId: NEWCOMER,
+          zitadelOrgId: NEWCOMER_ORG,
+          kind: 'REAL',
+          accountId: newcomerAccount,
+        })
       );
       expect((await registerRows()).map((row) => row.tenantId)).toContain(NEWCOMER);
     });

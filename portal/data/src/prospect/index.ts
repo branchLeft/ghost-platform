@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { desc } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import { bind, connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { UNIQUE_VIOLATION, readDatabaseError } from '../databaseError.js';
@@ -64,7 +65,8 @@ export class ProspectDb {
   /**
    * Records a prospect's request and returns the opaque id the demo will run
    * under. The table refuses a second request for the same verified address
-   * whichever process sends it.
+   * while an earlier one is open, whichever process sends it; an address whose
+   * earlier demo FAILED may request again.
    *
    * @throws InvalidDemoRequestError
    * @throws DemoRequestExistsError
@@ -100,13 +102,17 @@ export class ProspectDb {
     const address = parseVerifiedAddress(verifiedAddress);
     return this.run(async (tx) => {
       await bind(tx, 'portal.prospect_address', address);
+      // Newest first: a second request is accepted only once the earlier demo FAILED,
+      // so the newest row is the open claim.
       const [found] = await tx
         .select({
           demoId: demoRequest.demoId,
           publicationName: demoRequest.publicationName,
           submittedAt: demoRequest.submittedAt,
         })
-        .from(demoRequest);
+        .from(demoRequest)
+        .orderBy(desc(demoRequest.submittedAt), desc(demoRequest.demoId))
+        .limit(1);
       return found === undefined ? undefined : deriveOwnRequestView(found);
     });
   }
@@ -132,7 +138,12 @@ export class ProspectDb {
     const address = parseVerifiedAddress(verifiedAddress);
     return this.run(async (tx) => {
       await bind(tx, 'portal.prospect_address', address);
-      const [own] = await tx.select({ demoId: demoRequest.demoId }).from(demoRequest);
+      // The newest row is the open claim (see ownRequest).
+      const [own] = await tx
+        .select({ demoId: demoRequest.demoId })
+        .from(demoRequest)
+        .orderBy(desc(demoRequest.submittedAt), desc(demoRequest.demoId))
+        .limit(1);
       if (own === undefined) throw new NoDemoToExtendError();
       try {
         await tx.insert(demoExtensionRequest).values({ ...row, demoId: own.demoId });

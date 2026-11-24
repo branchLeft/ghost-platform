@@ -321,7 +321,7 @@ describe('the grants and the policies, as the catalog holds them', () => {
     expect(result.rows.map((r) => r.privilege)).toEqual(['INSERT']);
   });
 
-  it('holds exactly three policies, each for a named role and none for PUBLIC', async () => {
+  it('holds exactly four policies, each for a named role and none for PUBLIC', async () => {
     const result = await fx.admin.query<{ polname: string; roles: string; cmd: string }>(
       `SELECT polname, polcmd::text AS cmd,
               array_to_string(ARRAY(SELECT pg_get_userbyid(r) FROM unnest(polroles) r), ',') AS roles
@@ -329,6 +329,7 @@ describe('the grants and the policies, as the catalog holds them', () => {
     );
     expect(result.rows).toEqual([
       { polname: 'own_request', cmd: 'r', roles: 'portal_prospect' },
+      { polname: 'provisioner_close_claim', cmd: 'w', roles: 'portal_provisioner' },
       { polname: 'provisioner_read', cmd: 'r', roles: 'portal_provisioner' },
       { polname: 'request_insert', cmd: 'a', roles: 'portal_prospect' },
     ]);
