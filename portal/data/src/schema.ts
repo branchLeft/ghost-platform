@@ -78,11 +78,21 @@ export const tenantRegister = portal
       accountId: uuid('account_id')
         .notNull()
         .references((): AnyPgColumn => account.accountId),
+      // The tenant's ActivityPub federation switch. Off by default and for every
+      // row that existed before this column; the who and when are the last change.
+      federationEnabled: boolean('federation_enabled').notNull().default(false),
+      federationUpdatedBy: text('federation_updated_by'),
+      federationUpdatedAt: timestamp('federation_updated_at', { withTimezone: true }),
     },
     (table) => [
       check(
         'tenant_register_kind_known',
         sql`${table.kind} IN (${sql.raw(sqlList(TENANT_KINDS))})`
+      ),
+      // A demo slot can never have federation on, whatever a statement says.
+      check(
+        'tenant_register_federation_demo_off',
+        sql`NOT (${table.federationEnabled} AND ${table.kind} = 'DEMO')`
       ),
       // The name a customer signed up under, in its stored (normalised) form.
       // Null for a demo slot. Unique, so a second sign-up under a taken name is

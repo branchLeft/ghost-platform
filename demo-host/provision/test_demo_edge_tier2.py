@@ -78,6 +78,12 @@ def problems_of(artifacts: tier2.CaseArtifacts) -> list[str]:
     return tier2.wildcard_proof_problems(artifacts, BASE, SLOT_HOSTS, UNMATCHED_HOST, TOO_DEEP_HOST)
 
 
+# Set to 1 by the Format and lint job, which must not build the image; the
+# docker-proofs job runs these classes without it.
+ELSEWHERE_ENV = "BRANCHLEFT_DOCKER_PROOFS_ELSEWHERE"
+ELSEWHERE_REASON = "the Docker image proof runs in the docker-proofs job (repo-tooling-ci.yml)"
+
+
 class ParserTests(unittest.TestCase):
     def test_pebble_log_with_one_wildcard_order(self):
         observed = tier2.parse_pebble_log(PEBBLE_LOG)
@@ -486,6 +492,8 @@ class RealCaPoweredTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        if os.environ.get(ELSEWHERE_ENV) == "1":
+            raise unittest.SkipTest(ELSEWHERE_REASON)
         runner = resolve_proof_runner()
         if runner is None:
             raise unittest.SkipTest(

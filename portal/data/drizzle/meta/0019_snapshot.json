@@ -1,6 +1,6 @@
 {
-  "id": "03dfb671-3cbc-4fe8-9b6a-689f86e9ba16",
-  "prevId": "05c0be09-d0c2-448b-899e-62e960e35656",
+  "id": "189a742a-26b1-4243-9f0f-adfd3405b234",
+  "prevId": "0bb6f09e-c28d-46cf-ba53-881d3f6563b6",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1499,6 +1499,25 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "federation_enabled": {
+          "name": "federation_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "federation_updated_by": {
+          "name": "federation_updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "federation_updated_at": {
+          "name": "federation_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -1548,6 +1567,10 @@
         "tenant_register_kind_known": {
           "name": "tenant_register_kind_known",
           "value": "\"portal\".\"tenant_register\".\"kind\" IN ('REAL', 'DEMO')"
+        },
+        "tenant_register_federation_demo_off": {
+          "name": "tenant_register_federation_demo_off",
+          "value": "NOT (\"portal\".\"tenant_register\".\"federation_enabled\" AND \"portal\".\"tenant_register\".\"kind\" = 'DEMO')"
         },
         "tenant_register_tenant_name_shape": {
           "name": "tenant_register_tenant_name_shape",
