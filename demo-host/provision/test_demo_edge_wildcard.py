@@ -53,6 +53,12 @@ ROUTE_HOST_MATCHER_PATH = re.compile(
 )
 
 
+# Set to 1 by the Format and lint job, which must not build the image; the
+# docker-proofs job runs these classes without it.
+ELSEWHERE_ENV = "BRANCHLEFT_DOCKER_PROOFS_ELSEWHERE"
+ELSEWHERE_REASON = "the Docker image proof runs in the docker-proofs job (repo-tooling-ci.yml)"
+
+
 class CaddyUnavailable(RuntimeError):
     """No usable real Caddy where one is required."""
 
@@ -505,6 +511,8 @@ class RealCaddyCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        if os.environ.get(ELSEWHERE_ENV) == "1":
+            raise unittest.SkipTest(ELSEWHERE_REASON)
         runner = resolve_runner()
         if runner is None:
             raise unittest.SkipTest(f"no Docker and no {CADDY_BINARY_ENV}: the real-Caddy proof did not run (CI fails here)")
