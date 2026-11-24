@@ -1,0 +1,340 @@
+name: activitypub images
+
+# Builds the upstream ActivityPub service (TryGhost/ActivityPub) and its separate
+# migrate image from source at the one commit services/activitypub/UPSTREAM pins,
+# proves each still starts and carries its licence, and publishes both by digest
+# to ghcr.io/branchleft. The upstream Dockerfile's `production` target is the
+# service and `migrate/Dockerfile` is the migrate image. Neither is a mirror of a
+# published image: the bytes come from the pinned source here, so the build
+# attestation below covers them.
+#
+# A pull request builds and proves only, with no credential. On push to `main`
+# (or a manual dispatch from `main`) a push job publishes the very images the
+# proof tested, each tagged with the git SHA, and reads each pushed digest back
+# from the image store. The scan and attest jobs then follow each image, so an
+# image that fails the scan is never signed. Nothing runs either image.
+#
+# A bump of the pin is a reviewed diff of services/activitypub/UPSTREAM, which
+# changes the commit the build fetches and nothing else.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/activitypub/**
+      - .github/workflows/activitypub-image.yml
+      - workflow-activitypub-image.test.ts
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - services/activitypub/**
+      - .github/workflows/activitypub-image.yml
+      - workflow-activitypub-image.test.ts
+
+# Nothing here installs from GitHub Packages, and this workflow's top level
+# never requests a write credential: only the push and attest jobs below ask
+# for one, each for itself.
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: docker build + proof (activitypub, activitypub-migrate)
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 30
+
+    outputs:
+      service-id: ${{ steps.proven.outputs.service-id }}
+      migrate-id: ${{ steps.proven.outputs.migrate-id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The workflow's own shape test runs first, under the repo's Node (.nvmrc),
+      # which runs the TypeScript directly.
+      - name: Set up Node for the workflow test
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Workflow shape test
+        run: node --test workflow-activitypub-image.test.ts
+
+      # The one commit the build may use. It must be a full 40-digit SHA.
+      - name: Read the upstream pin
+        id: pin
+        run: |
+          commit="$(sed -n 's/^commit=//p' services/activitypub/UPSTREAM)"
+          if ! printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::services/activitypub/UPSTREAM does not pin a full commit SHA (got: '$commit')"
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      # The upstream source, at exactly the pinned commit. The public repository
+      # needs no credential.
+      - name: Fetch the pinned upstream source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: TryGhost/ActivityPub
+          ref: ${{ steps.pin.outputs.commit }}
+          path: upstream
+          persist-credentials: false
+
+      - name: Check the source is the pinned commit
+        env:
+          PINNED: ${{ steps.pin.outputs.commit }}
+        run: |
+          test "$(git -C upstream rev-parse HEAD)" = "$PINNED"
+
+      # linux/amd64 is the platform the scan reads. The service is the upstream
+      # `production` target; the migrate image is upstream's own migrate/Dockerfile,
+      # built from its directory as the context that Dockerfile expects.
+      - name: Build the upstream service and migrate images
+        run: |
+          docker build --platform linux/amd64 --target production --tag activitypub-upstream:ci upstream
+          docker build --platform linux/amd64 --tag activitypub-migrate-upstream:ci upstream/migrate
+
+      # Each image gets the upstream licence from the pinned commit, copied in by
+      # an overlay that changes nothing else in the image.
+      - name: Add the upstream licence to each image
+        run: |
+          docker build --platform linux/amd64 --file services/activitypub/licence.Dockerfile --build-arg UPSTREAM_IMAGE=activitypub-upstream:ci --tag activitypub:ci services/activitypub
+          docker build --platform linux/amd64 --file services/activitypub/licence.Dockerfile --build-arg UPSTREAM_IMAGE=activitypub-migrate-upstream:ci --tag activitypub-migrate:ci services/activitypub
+
+      # What this proves: the service runs its pinned Node runtime and has the
+      # built bundle; the migrate image runs its migration tool; both carry the
+      # licence. No database is reachable here, so nothing is started.
+      - name: Check the images run and carry their licence
+        run: |
+          docker run --rm --entrypoint node activitypub:ci --version | grep -qx 'v26.13.1'
+          docker run --rm --entrypoint sh activitypub:ci -c 'test -f /opt/activitypub/dist/app.js && test -f /licenses/LICENSE'
+          docker run --rm --entrypoint sh activitypub-migrate:ci -c 'test -x /usr/bin/migrate && test -f /licenses/LICENSE'
+          docker run --rm --entrypoint migrate activitypub-migrate:ci -version
+          docker run --rm --entrypoint sh activitypub:ci -c 'grep -q "^MIT License" /licenses/LICENSE'
+
+      # Only reached when the proof above passed. The image IDs are read after
+      # the proof and travel with the saved tarballs, so the push job can refuse
+      # anything else.
+      - name: Save the proven images
+        id: proven
+        run: |
+          docker save --output activitypub.tar activitypub:ci
+          docker save --output activitypub-migrate.tar activitypub-migrate:ci
+          echo "service-id=$(docker image inspect --format '{{.Id}}' activitypub:ci)" >> "$GITHUB_OUTPUT"
+          echo "migrate-id=$(docker image inspect --format '{{.Id}}' activitypub-migrate:ci)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the proven images
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: activitypub-images
+          path: |
+            activitypub.tar
+            activitypub-migrate.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  push:
+    name: Push the proven activitypub images
+    runs-on: ubuntu-latest
+    needs: build
+    # `main` for every trigger: a manual dispatch from another ref must not
+    # publish an image.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      service-image: ${{ steps.digest.outputs.service-image }}
+      service-digest: ${{ steps.digest.outputs.service-digest }}
+      migrate-image: ${{ steps.digest.outputs.migrate-image }}
+      migrate-digest: ${{ steps.digest.outputs.migrate-digest }}
+
+    env:
+      SERVICE_IMAGE: ghcr.io/branchleft/activitypub
+      MIGRATE_IMAGE: ghcr.io/branchleft/activitypub-migrate
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Download the proven images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: activitypub-images
+
+      # The loaded images must be exactly the ones the proof ran against.
+      - name: Load the proven images and check their IDs
+        env:
+          SERVICE_ID: ${{ needs.build.outputs.service-id }}
+          MIGRATE_ID: ${{ needs.build.outputs.migrate-id }}
+        run: |
+          set -eu
+          docker load --input activitypub.tar
+          docker load --input activitypub-migrate.tar
+          loaded_service="$(docker image inspect --format '{{.Id}}' activitypub:ci)"
+          loaded_migrate="$(docker image inspect --format '{{.Id}}' activitypub-migrate:ci)"
+          if [ -z "$SERVICE_ID" ] || [ "$loaded_service" != "$SERVICE_ID" ]; then
+            echo "::error::loaded service image '$loaded_service' is not the proven image '$SERVICE_ID'"
+            exit 1
+          fi
+          if [ -z "$MIGRATE_ID" ] || [ "$loaded_migrate" != "$MIGRATE_ID" ]; then
+            echo "::error::loaded migrate image '$loaded_migrate' is not the proven image '$MIGRATE_ID'"
+            exit 1
+          fi
+          docker tag activitypub:ci "$SERVICE_IMAGE:$IMAGE_TAG"
+          docker tag activitypub-migrate:ci "$MIGRATE_IMAGE:$IMAGE_TAG"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        run: |
+          docker push "$SERVICE_IMAGE:$IMAGE_TAG"
+          docker push "$MIGRATE_IMAGE:$IMAGE_TAG"
+
+      # The digests are read from the image store after the push, never
+      # assembled from the tag or the commit. A missing or malformed digest fails
+      # the job, so no run ends green without references to pin.
+      - name: Read and verify the pushed digests
+        id: digest
+        run: |
+          set -eu
+          digest_of() {
+            reference="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$1:$IMAGE_TAG" | grep "^$1@" | head -n 1)"
+            digest="${reference#*@}"
+            if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+              echo "::error::no well-formed sha256 digest for $1:$IMAGE_TAG (got: '$reference')" >&2
+              exit 1
+            fi
+            printf '%s' "$digest"
+          }
+          service_digest="$(digest_of "$SERVICE_IMAGE")"
+          migrate_digest="$(digest_of "$MIGRATE_IMAGE")"
+          {
+            echo "service-digest=$service_digest"
+            echo "service-image=$SERVICE_IMAGE@$service_digest"
+            echo "migrate-digest=$migrate_digest"
+            echo "migrate-image=$MIGRATE_IMAGE@$migrate_digest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          SERVICE_PINNED: ${{ steps.digest.outputs.service-image }}
+          MIGRATE_PINNED: ${{ steps.digest.outputs.migrate-image }}
+        run: |
+          {
+            echo '## activitypub image push'
+            echo
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Service: \`${SERVICE_PINNED:-NO DIGEST: push did not complete}\`"
+            echo "Migrate: \`${MIGRATE_PINNED:-NO DIGEST: push did not complete}\`"
+            echo "The scan and attest jobs follow: use these digests only once both images are green."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Each pushed digest is scanned by the shared image-scan workflow before
+  # anything signs it. It fails the run on any critical or high finding no
+  # exemption covers; the threshold is fixed in that workflow and cannot be
+  # lowered here. A finding with no available fix goes through the exemption
+  # route in .image-scan-exemptions.json, never a changed threshold.
+  scan-service:
+    name: Scan the pushed activitypub image
+    needs: push
+    permissions:
+      contents: read
+      packages: read
+    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
+    with:
+      image: ${{ needs.push.outputs.service-image }}
+
+  scan-migrate:
+    name: Scan the pushed activitypub-migrate image
+    needs: push
+    permissions:
+      contents: read
+      packages: read
+    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
+    with:
+      image: ${{ needs.push.outputs.migrate-image }}
+
+  # Each signs its digest with a keyless GitHub artifact attestation, then
+  # verifies it with the identity below and checks that a wrong identity is
+  # rejected. It needs its scan, so an image that fails the scan is never signed.
+  # The identity is a literal on purpose: read from this run's own
+  # `github.workflow_ref` it would agree with itself and prove nothing. A host
+  # passes the same value, with the source ref `refs/heads/main`, to
+  # scripts/verify-image-attestation.sh.
+  attest-service:
+    name: Attest and verify the scanned activitypub image
+    needs: [push, scan-service]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/branchleft/activitypub
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest and verify the pushed image
+        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ needs.push.outputs.service-digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/activitypub-image.yml
+          repo: branchLeft/ghost-platform
+
+  attest-migrate:
+    name: Attest and verify the scanned activitypub-migrate image
+    needs: [push, scan-migrate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/branchleft/activitypub-migrate
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest and verify the pushed image
+        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ needs.push.outputs.migrate-digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/activitypub-image.yml
+          repo: branchLeft/ghost-platform

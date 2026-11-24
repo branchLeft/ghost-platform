@@ -119,6 +119,14 @@
     {
       "name": "priv/storage-gateway",
       "visibility": "private"
+    },
+    {
+      "name": "activitypub",
+      "visibility": "public"
+    },
+    {
+      "name": "activitypub-migrate",
+      "visibility": "public"
     }
   ]
 }
