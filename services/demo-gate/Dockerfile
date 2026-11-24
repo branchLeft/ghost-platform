@@ -11,13 +11,13 @@
 # scan found the Debian base carried findings with no published fix, and every
 # runtime dependency here is pure JavaScript, so nothing needs a glibc build.
 #
-# Pinned by digest: the linux/amd64 manifest of node:26.13.0-alpine, read from
-# the registry. A re-pointed tag cannot change what ships.
+# Pinned by digest: the linux/amd64 manifest of node:26.13.1-alpine3.24, read
+# from the registry. A re-pointed tag cannot change what ships.
 FROM node:26.13.1-alpine3.24@sha256:a90bda2938f2b57112d94ee2e3722c5346efca76e4a034042b5223197567a16c
 
 # zlib 1.3.2 in this base has CVE-2026-4738 (critical), fixed in zlib 1.4-r0.
 # libcrypto3 and libssl3 3.5.9-r0 carry high CVEs fixed in 3.5.9-r1.
-# node 26.13.0 carried high CVEs fixed in 26.13.1, so the base moved there.
+# node 26.13.0 carried high CVEs fixed in 26.13.1, so the base moved to 26.13.1.
 # Remove this line once the pinned base carries the fixed packages.
 RUN apk upgrade --no-cache zlib libcrypto3 libssl3
 
