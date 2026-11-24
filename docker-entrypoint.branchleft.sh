@@ -130,28 +130,38 @@ check_storage_feature() {
 # leaves the old theme live; it never stops Ghost from starting.
 # See docker-entrypoint.branchleft.md#bundled-theme-refresh.
 
-# sha256 of stdin as hex: sha256sum in the image, shasum on a macOS host.
-sha256_hex() {
+# sha256 of a file, as hex. Fails (non-zero) when the file cannot be read, so a
+# partly readable tree never hashes as if it were whole.
+sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | cut -d' ' -f1
+        out=$(sha256sum "$1") || return 1
     else
-        shasum -a 256 | cut -d' ' -f1
+        out=$(shasum -a 256 "$1") || return 1
     fi
+    printf '%s\n' "${out%% *}"
 }
 
 # The content hash themes/lib/treehash.mjs computes, in POSIX sh: sha256 of the
 # sorted "<sha256 of file>  <path>" lines (a symlink as "link:<target>  <path>").
+# Returns non-zero when any part of the tree cannot be listed or read, so the
+# caller leaves the copy alone instead of comparing a partial hash.
 tree_sha256() {
-    (
-        cd "$1" || exit 1
-        find . \( -type f -o -type l \) | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r rel; do
-            if [ -L "$rel" ]; then
-                printf 'link:%s  %s\n' "$(readlink "$rel")" "$rel"
-            else
-                printf '%s  %s\n' "$(sha256_hex < "$rel")" "$rel"
-            fi
-        done | sha256_hex
-    )
+    root=$1
+    rels=$(cd "$root" && find . \( -type f -o -type l \)) || return 1
+    rels=$(printf '%s\n' "$rels" | sed 's|^\./||' | LC_ALL=C sort) || return 1
+    lines=$(printf '%s\n' "$rels" | while IFS= read -r rel; do
+        if [ -L "$root/$rel" ]; then
+            printf 'link:%s  %s\n' "$(readlink "$root/$rel")" "$rel" || exit 1
+        else
+            digest=$(sha256_of "$root/$rel") || exit 1
+            printf '%s  %s\n' "$digest" "$rel"
+        fi
+    done) || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s\n' "$lines" | sha256sum | cut -d' ' -f1
+    else
+        printf '%s\n' "$lines" | shasum -a 256 | cut -d' ' -f1
+    fi
 }
 
 refresh_bundled_themes() {
@@ -179,7 +189,11 @@ refresh_bundled_themes() {
         # Only a copy as a shipped image installed it is replaced: its files must
         # hash to one of the listed trees for this theme. Anything else is the
         # tenant's own, and is left alone.
-        digest=$(tree_sha256 "$target")
+        # A failure here warns and leaves the theme alone: Ghost still starts.
+        if ! digest=$(tree_sha256 "$target"); then
+            echo "WARNING: could not hash bundled theme $name; it is left as it is" >&2
+            continue
+        fi
         if ! awk -v n="$name" -v h="$digest" '$1 == n && $2 == h { found = 1 } END { exit !found }' "$pins" 2>/dev/null; then
             echo "left bundled theme $name untouched: it matches no shipped tree (tenant-changed or unknown), so it keeps its credit gap" >&2
             continue
@@ -187,7 +201,10 @@ refresh_bundled_themes() {
 
         owner=""
         if [ "$(id -u)" = '0' ]; then
-            owner=$(stat -c '%u:%g' "$target")
+            if ! owner=$(stat -c '%u:%g' "$target"); then
+                echo "WARNING: could not read the owner of bundled theme $name; it is left as it is" >&2
+                continue
+            fi
         fi
         staged="$site_themes/.$name.refresh-$$"
         rm -rf "$staged"
@@ -218,7 +235,7 @@ case "$*" in
         check_storage_feature images
         check_storage_feature media
         check_storage_feature files
-        refresh_bundled_themes
+        refresh_bundled_themes || echo "WARNING: the bundled-theme refresh failed; Ghost starts with the themes as they are" >&2
         ;;
 esac
 

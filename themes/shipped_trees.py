@@ -5,8 +5,9 @@ A tenant's volume keeps the theme copy an earlier image seeded. The entrypoint
 (docker-entrypoint.branchleft.sh, refresh_bundled_themes) replaces a stale copy
 only when it is one of these trees, so a tenant's own changes are never replaced.
 A tree is the one an image installs after the theme steps: the fetched bundle
-(pinned in themes/manifest.json), then the footer patch where the commit has one,
-then the platform-fonts step where the commit has one. The Dockerfile copies the
+(pinned in themes/manifest.json), then the footer patch, the font files and the
+platform-fonts step, each where that commit's Dockerfile has its line (the font
+files in every theme commit). The Dockerfile copies the
 resulting list into the image as bundled-theme-pins.txt.
 
 Usage, from the repository root:
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -79,8 +81,21 @@ def run(*args: str, cwd: Path | None = None) -> None:
     subprocess.run(list(args), cwd=cwd, check=True, capture_output=True, text=True)
 
 
+# The Dockerfile text each theme step is recognised by. Each step runs only where
+# the commit's own Dockerfile has its line, so the replay is that commit's image.
+FONTS_COPY = "cp -R /tmp/themes-bundle/fonts/."
+FOOTER_APPLY = "footer-credit/apply.sh"
+PLATFORM_FONTS = "--platform-fonts"
+
+
 def installed_trees(commit: str, work: Path) -> dict[str, str]:
-    """The installed tree of each bundled theme that this commit's image ships."""
+    """The installed tree of each bundled theme that this commit's image ships.
+
+    Replays the Dockerfile's theme steps as that commit wrote them. Every step
+    follows the Dockerfile text, and the bundle is checked against the commit's own
+    manifest pins first, as verify.mjs checks it in the image build.
+    """
+    dockerfile = git("show", f"{commit}:Dockerfile").decode()
     tar = git("archive", commit, "themes")
     src = work / "src"
     src.mkdir()
@@ -92,10 +107,19 @@ def installed_trees(commit: str, work: Path) -> dict[str, str]:
     post = work / "post"
     shutil.copytree(bundle / "themes", post, symlinks=True)
 
+    # verify.mjs: each bundled theme is the manifest's pinned tree before any step.
+    manifest = json.loads((themes / "manifest.json").read_text())
+    for theme in manifest["themes"]:
+        if theme["source"] == "base-image":
+            continue
+        got = tree_sha256(post / theme["name"])
+        if got != theme["treeSha256"]:
+            raise SystemExit(f"{commit[:8]}: {theme['name']} bundle differs from its pin")
+
     # The footer patch, as footer-credit/apply.sh applies it, for each bundled
     # theme present (casper and source are not in the bundle; see the docstring).
     footer = themes / "footer-credit"
-    if (footer / "platform-footer-credit.hbs").exists():
+    if FOOTER_APPLY in dockerfile:
         for patch in sorted(footer.glob("*.patch")):
             theme_dir = post / patch.stem
             if not theme_dir.is_dir():
@@ -108,15 +132,29 @@ def installed_trees(commit: str, work: Path) -> dict[str, str]:
             (theme_dir / "partials").mkdir(exist_ok=True)
             shutil.copy(footer / "platform-footer-credit.hbs", theme_dir / PARTIAL)
 
-    # The platform-fonts step, as the Dockerfile's theme loop runs it.
-    if "--platform-fonts" in (themes / "fetch.mjs").read_text():
+    # The font files: the Dockerfile's theme loop copied them into every theme from
+    # the first theme commit on, so a commit that bundles themes must have the line.
+    if "fetch.mjs --out" in dockerfile:
+        if FONTS_COPY not in dockerfile:
+            raise SystemExit(f"{commit[:8]}: the Dockerfile has no font copy line")
         for theme_dir in sorted(p for p in post.iterdir() if p.is_dir()):
             fonts_dir = theme_dir / "assets" / "platform-fonts"
             fonts_dir.mkdir(parents=True, exist_ok=True)
             shutil.copytree(bundle / "fonts", fonts_dir, dirs_exist_ok=True)
+
+    # The platform-fonts step (fetch.mjs --platform-fonts), where the Dockerfile has it.
+    if PLATFORM_FONTS in dockerfile:
+        for theme_dir in sorted(p for p in post.iterdir() if p.is_dir()):
             run("node", str(themes / "fetch.mjs"), "--platform-fonts", str(theme_dir))
 
-    return {p.name: tree_sha256(p) for p in sorted(post.iterdir()) if p.is_dir()}
+    trees = {p.name: tree_sha256(p) for p in sorted(post.iterdir()) if p.is_dir()}
+    print(
+        f"{commit[:8]}: footer={FOOTER_APPLY in dockerfile} "
+        f"fonts={FONTS_COPY in dockerfile} platform-fonts={PLATFORM_FONTS in dockerfile} "
+        f"themes={len(trees)} pins=match",
+        file=sys.stderr,
+    )
+    return trees
 
 
 def main() -> int:

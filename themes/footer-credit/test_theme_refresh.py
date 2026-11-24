@@ -36,14 +36,14 @@ PRISTINE_OLDER = {
     "package.json": '{"name":"older","version":"2"}',
     "default.hbs": "pristine footer\n",
 }
-# The same theme as an earlier image installed it after the platform-fonts step:
-# the font files, the stylesheet, the font partial and the font call in default.hbs.
+# The same theme as the images before the footer step installed it: the bundle
+# plus the font files the Dockerfile's theme loop copied in (the font step and
+# the footer patch came later). This is a state that really shipped, and it lacks
+# the credit partial, so it is the state the refresh exists for.
 FONTS_OLDER = {
     **PRISTINE_OLDER,
-    "default.hbs": "pristine footer\n{{> \"platform-fonts\"}}\n",
-    "partials/platform-fonts.hbs": '<link rel="stylesheet" href="{{asset "platform-fonts/fonts.css"}}">\n',
     "assets/platform-fonts/fonts.css": "@font-face { font-family: X; src: url(X.woff2); }\n",
-    "assets/platform-fonts/X.woff2": "font bytes\n",
+    "assets/platform-fonts/X/X.woff2": "font bytes\n",
 }
 
 
@@ -174,6 +174,20 @@ class ThemeRefreshTest(unittest.TestCase):
         self.assertFalse((self.site / "older" / PARTIAL).exists())
         self.assertFalse((self.content / "theme-backup-pre-footer-credit").exists())
         self.assert_no_staged_copies()
+
+    def test_unreadable_tenant_copy_never_stops_ghost(self) -> None:
+        # A bundled name whose copy cannot be read: the hash or the owner lookup
+        # may fail, and the refresh must warn and leave it, not stop the start.
+        self.site_older_pristine()
+        locked = self.site / "older" / "locked"
+        write(locked / "x.txt", "y\n")
+        os.chmod(locked, 0)
+        try:
+            result = self.run_wrapper(GHOST_BOOT)
+        finally:
+            os.chmod(locked, 0o755)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("UPSTREAM", result.stdout)
 
     def test_current_bundled_theme_is_left_alone(self) -> None:
         write(self.site / "fresh" / "default.hbs", "tenant edit\n")
