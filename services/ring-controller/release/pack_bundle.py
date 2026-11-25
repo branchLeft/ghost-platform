@@ -41,7 +41,8 @@ class BundleError(Exception):
 
 
 def bundle_name(version: str) -> str:
-    return f"ring-controller-bundle-{version}.tar.gz"
+    # .tgz, not .tar.gz: the shared attest action accepts only the .tgz suffix.
+    return f"ring-controller-bundle-{version}.tgz"
 
 
 def check_version(version: str) -> None:

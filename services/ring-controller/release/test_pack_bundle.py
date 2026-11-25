@@ -87,6 +87,11 @@ class PackBundleTests(unittest.TestCase):
             self.assertEqual(names, sorted(names))
         pack_bundle.check_bundle(tarball)
 
+    def test_the_bundle_name_ends_in_tgz_as_the_attest_action_requires(self) -> None:
+        name = pack_bundle.bundle_name("1.2.3")
+        self.assertEqual(name, "ring-controller-bundle-1.2.3.tgz")
+        self.assertTrue(name.endswith(".tgz"))
+
     def test_a_version_that_is_not_semver_is_refused(self) -> None:
         dist = _make_dist(self.root, ["index.js"], stamp=1)
         with self.assertRaisesRegex(pack_bundle.BundleError, "not MAJOR.MINOR.PATCH"):

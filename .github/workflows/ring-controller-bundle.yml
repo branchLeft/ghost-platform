@@ -87,7 +87,7 @@ jobs:
               --version "${VERSION}" \
               --out "${RUNNER_TEMP}/bundle-${run}"
           done
-          name="ring-controller-bundle-${VERSION}.tar.gz"
+          name="ring-controller-bundle-${VERSION}.tgz"
           cmp "${RUNNER_TEMP}/bundle-a/${name}" "${RUNNER_TEMP}/bundle-b/${name}"
           mkdir -p "${RUNNER_TEMP}/release"
           cp "${RUNNER_TEMP}/bundle-a/${name}" "${RUNNER_TEMP}/bundle-a/${name}.sha256" "${RUNNER_TEMP}/release/"
@@ -95,7 +95,7 @@ jobs:
       - name: Attest the bundle
         uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
         with:
-          tarball: ${{ runner.temp }}/release/ring-controller-bundle-${{ steps.pack.outputs.version }}.tar.gz
+          tarball: ${{ runner.temp }}/release/ring-controller-bundle-${{ steps.pack.outputs.version }}.tgz
           repo: branchLeft/ghost-platform
           signer-workflow: branchLeft/ghost-platform/.github/workflows/ring-controller-bundle.yml
           ref: ${{ steps.pack.outputs.ref }}
@@ -106,7 +106,7 @@ jobs:
           VERSION: ${{ steps.pack.outputs.version }}
         run: |
           set -euo pipefail
-          name="ring-controller-bundle-${VERSION}.tar.gz"
+          name="ring-controller-bundle-${VERSION}.tgz"
           # The shared attest action exposes no bundle path, so the bundle is read back from
           # the attestation API into its own directory, and must come back as exactly one file.
           mkdir -p "${RUNNER_TEMP}/attestation"

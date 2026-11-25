@@ -40,6 +40,11 @@ test('attests through the shared npm-tarball action, pinned to its release, befo
   );
 });
 
+test('names the bundle with the .tgz suffix the attest action requires, never .tar.gz', () => {
+  assert.match(text, /name="ring-controller-bundle-\$\{VERSION\}\.tgz"/);
+  assert.doesNotMatch(text, /\.tar\.gz/);
+});
+
 test('packs twice and holds the two packs to the same bytes before anything is signed', () => {
   assert.match(text, /--out "\$\{RUNNER_TEMP\}\/bundle-\$\{run\}"/);
   assert.match(
