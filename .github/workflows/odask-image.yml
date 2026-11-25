@@ -5,9 +5,21 @@ name: odask image
 # behind it -- scripts/test-odask.sh -- never a second-hand copy of what
 # the image ships, because it's the same image handed to the script.
 #
-# Build-only, mirroring drain-sidecar-image.yml and demo-gate-image.yml's
-# stance: no push, no registry credential. Delivering this image to the
-# tenant estate's edge is a separate story.
+# On push to `main` (or a manual dispatch from `main`) the proven image is
+# published to ghcr.io/branchleft/odask tagged with the git SHA, signed with a
+# GitHub build-provenance attestation, and the job summary prints
+# `ghcr.io/branchleft/odask@sha256:...`. That digest-qualified reference is the
+# only thing a consumer may pin; a tag can be re-pointed, a digest cannot. There
+# is deliberately no `latest` tag. Pull requests build and prove only; they never
+# reach the push, scan, attest or registry-pull jobs.
+#
+# Same route as demo-edge-image.yml: the `build` job proves the image and saves
+# it, the `push` job loads that exact image, checks its ID, then tags and pushes
+# it. Nothing is rebuilt, so the proof covers the pushed bytes. The push is one
+# linux/amd64 manifest (no multi-platform index, no buildkit attestation), so
+# the digest survives `docker save | docker load` unchanged. GHCR authenticates
+# with the workflow's own GITHUB_TOKEN. Delivering this image to the tenant
+# estate's edge is a separate story.
 
 on:
   push:
@@ -16,6 +28,7 @@ on:
       - services/odask/**
       - scripts/test-odask.sh
       - .github/workflows/odask-image.yml
+  workflow_dispatch:
   pull_request:
     branches: [main]
     paths:
@@ -23,9 +36,9 @@ on:
       - scripts/test-odask.sh
       - .github/workflows/odask-image.yml
 
-# `packages: read` because the image's build stage installs
-# `@branchleft/tsconfig` from GitHub Packages -- read-only, and this
-# workflow never requests a write credential at all.
+# Read-only at the top. `packages: read` because the image's build stage installs
+# `@branchleft/tsconfig` from GitHub Packages. Only the push job asks for a write
+# scope, for itself.
 permissions:
   contents: read
   packages: read
@@ -46,20 +59,30 @@ jobs:
     # checks, including a real ACME v2 round trip.
     timeout-minutes: 15
 
+    outputs:
+      image-id: ${{ steps.proven.outputs.image-id }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Built from the repository root, with the context narrowed to the
       # service by its Dockerfile.dockerignore (see services/odask/Dockerfile).
       # The secret is consumed by a `RUN --mount` there, so it reaches
       # `pnpm install` (which fetches render-core from GitHub Packages)
-      # without entering a layer or the build history.
-      - name: Build odask image
+      # without entering a layer or the build history. The platform is named
+      # and no provenance or SBOM is attached, so the pushed image is one
+      # linux/amd64 manifest whose digest the registry can be asked for.
+      - name: Build odask image (linux/amd64)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           docker build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
             -f services/odask/Dockerfile \
             --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
             --tag odask:ci \
@@ -67,3 +90,217 @@ jobs:
 
       - name: Real Caddy + real Pebble ACME proof (ask contract, ceiling burst, served handshake, refused handshake, Caddy's own log)
         run: ./scripts/test-odask.sh odask:ci
+
+      # Only reached when the proof passed. The image ID is read after the
+      # proof, from the tag the proof ran, and travels with the saved tarball so
+      # the push job can refuse anything else.
+      - name: Save the proven image
+        id: proven
+        run: |
+          docker save --output odask.tar odask:ci
+          echo "image-id=$(docker image inspect --format '{{.Id}}' odask:ci)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the proven image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: odask-image
+          path: odask.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  push:
+    name: Push the proven odask image
+    runs-on: ubuntu-latest
+    needs: build
+    # `main` for every trigger: a manual dispatch from another ref must not
+    # publish an image.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    timeout-minutes: 20
+
+    # The signing grants are not here: they sit on the `attest` job below,
+    # which runs only after the scan.
+    permissions:
+      contents: read
+      packages: write
+
+    # One publish at a time, none cancelled half-way.
+    concurrency:
+      group: odask-image-push
+      cancel-in-progress: false
+
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
+      digest: ${{ steps.digest.outputs.digest }}
+
+    env:
+      IMAGE: ghcr.io/branchleft/odask
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the proven image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: odask-image
+
+      # The loaded image must be exactly the one the proof ran against.
+      - name: Load the proven image and check its ID
+        env:
+          PROVEN_ID: ${{ needs.build.outputs.image-id }}
+        run: |
+          docker load --input odask.tar
+          loaded="$(docker image inspect --format '{{.Id}}' odask:ci)"
+          if [ -z "$PROVEN_ID" ] || [ "$loaded" != "$PROVEN_ID" ]; then
+            echo "::error::loaded image '$loaded' is not the proven image '$PROVEN_ID'"
+            exit 1
+          fi
+          docker tag odask:ci "$IMAGE:$IMAGE_TAG"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        run: docker push "$IMAGE:$IMAGE_TAG"
+
+      # The digest is read from the image store after the push, never
+      # assembled from the tag or the commit. A missing or malformed digest
+      # fails the job, so no run ends green without a reference to pin.
+      - name: Read and verify the pushed digest
+        id: digest
+        run: |
+          reference="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$IMAGE_TAG" | grep "^$IMAGE@" | head -n 1)"
+          digest="${reference#*@}"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no well-formed sha256 digest for $IMAGE:$IMAGE_TAG (got: '$reference')"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          PINNED_IMAGE: ${{ steps.digest.outputs.image }}
+        run: |
+          {
+            echo '## odask image push'
+            echo
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Pin this: \`${PINNED_IMAGE:-NO DIGEST: push did not complete}\`"
+            echo
+            echo 'Pin this digest only after the scan, attest and registry-pull jobs are all green.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The pushed digest, scanned by the shared image-scan workflow before anything
+  # signs it. It fails the run on any critical or high finding no exemption
+  # covers; the threshold is fixed in that workflow and cannot be lowered here.
+  scan:
+    name: Scan the pushed odask image
+    needs: push
+    permissions:
+      contents: read
+      packages: read
+    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
+    with:
+      image: ${{ needs.push.outputs.image }}
+
+  # Signs the digest with a keyless GitHub artifact attestation, then verifies
+  # it with the identity below. It needs the scan, so an image that fails the
+  # scan is never signed. The identity is a literal on purpose: read from this
+  # run's own `github.workflow_ref` it would agree with itself and prove nothing.
+  # `id-token: write` mints the keyless signing certificate and
+  # `attestations: write` stores the attestation; the registry login needs
+  # `packages: write` for the stored bundle.
+  attest:
+    name: Attest and verify the scanned odask image
+    needs: [push, scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/branchleft/odask
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest and verify the pushed image
+        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ needs.push.outputs.digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/odask-image.yml
+          repo: branchLeft/ghost-platform
+
+  registry-pull:
+    name: Pull the published odask image back by digest
+    runs-on: ubuntu-latest
+    needs: [push, attest]
+    # Same main-only guard as the push job it follows.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    timeout-minutes: 10
+
+    # Read-only: this job may read the private package and nothing more.
+    permissions:
+      contents: read
+      packages: read
+
+    env:
+      PINNED_IMAGE: ${{ needs.push.outputs.image }}
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pulling by digest makes the daemon check the manifest against that
+      # digest, so the bytes pulled are the bytes the push job read and the
+      # attest job signed.
+      - name: Pull the digest and check it is the pushed one
+        run: |
+          if ! docker pull --platform linux/amd64 "$PINNED_IMAGE"; then
+            echo "::error::pull of $PINNED_IMAGE was refused or failed: the pushed digest cannot be read back from the registry with this run's token."
+            exit 1
+          fi
+          platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$PINNED_IMAGE")"
+          if [ "$platform" != 'linux/amd64' ]; then
+            echo "::error::pulled image is '$platform', not linux/amd64"
+            exit 1
+          fi
+          if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$PINNED_IMAGE" | grep -Fxq "$PINNED_IMAGE"; then
+            echo "::error::the pulled image does not report $PINNED_IMAGE as its repo digest"
+            exit 1
+          fi
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo '## odask registry pull'
+            echo
+            echo "Pulled \`${PINNED_IMAGE:-NO DIGEST}\` back with the run token: $JOB_STATUS"
+          } >> "$GITHUB_STEP_SUMMARY"

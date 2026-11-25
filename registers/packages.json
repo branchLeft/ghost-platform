@@ -25,6 +25,10 @@
       "visibility": "public"
     },
     {
+      "name": "odask",
+      "visibility": "private"
+    },
+    {
       "name": "portal-apps",
       "visibility": "public"
     },
@@ -119,6 +123,14 @@
     {
       "name": "priv/storage-gateway",
       "visibility": "private"
+    },
+    {
+      "name": "activitypub",
+      "visibility": "public"
+    },
+    {
+      "name": "activitypub-migrate",
+      "visibility": "public"
     }
   ]
 }
