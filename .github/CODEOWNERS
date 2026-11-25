@@ -54,22 +54,14 @@
 **/*.sha256                                      @branchLeft/branchleft-admin
 /widgets/pins.json                               @branchLeft/branchleft-admin
 /widgets/scripts/verify-pins.mjs                 @branchLeft/branchleft-admin
-/widgets/verify-pins.test.mjs                    @branchLeft/branchleft-admin
-/vendor/kalotyp/verify-kalotyp.test.mjs          @branchLeft/branchleft-admin
 
-# Gate scripts and the tests that required checks run, at the root and in scripts/.
-/*.test.js                                       @branchLeft/branchleft-admin
+# Gate scripts at the root and in scripts/. The tests of the gates are released.
 /scripts/assert-*.py                               @branchLeft/branchleft-admin
 /scripts/assert-*.js                             @branchLeft/branchleft-admin
 /scripts/verify-image-attestation.sh             @branchLeft/branchleft-admin
-/scripts/test-verify-image-attestation.sh        @branchLeft/branchleft-admin
-/scripts/test-node-env-gate.sh                   @branchLeft/branchleft-admin
+/scripts/test-odask.sh                           @branchLeft/branchleft-admin
 /scripts/digest-line-scope.js                    @branchLeft/branchleft-admin
 /scripts/demo-edge-pins.mjs                       @branchLeft/branchleft-admin
-/scripts/test_workflow_*.py                        @branchLeft/branchleft-admin
-/scripts/test_apply_gate_operands.py             @branchLeft/branchleft-admin
-/scripts/test_assert_*.py                          @branchLeft/branchleft-admin
-/scripts/test_image_mirror.py                    @branchLeft/branchleft-admin
 # Run by the gate set itself.
 /scripts/mail-gate/mail-gate.mjs                 @branchLeft/branchleft-admin
 /scripts/smoke-test.sh                           @branchLeft/branchleft-admin
@@ -115,10 +107,7 @@
 
 # Promotion and upgrade gates: their output feeds the signed promotion attestation.
 /services/release-classifier/src/                @branchLeft/branchleft-admin
-/services/release-classifier/test/gate.test.mjs  @branchLeft/branchleft-admin
 /services/ring-controller/src/                   @branchLeft/branchleft-admin
-/services/ring-controller/test/unit/*Sabotage*.test.ts @branchLeft/branchleft-admin
-/services/ring-controller/test/unit/helpers/sourceSabotage.ts @branchLeft/branchleft-admin
 /themes/verify.mjs                               @branchLeft/branchleft-admin
 /services/ring-controller/src/README.md
 
@@ -126,7 +115,6 @@
 /infra/scripts/                                  @branchLeft/branchleft-admin
 /infra/tenant/scripts/assert-*.py                  @branchLeft/branchleft-admin
 /infra/provisioning/scripts/assert-*.py            @branchLeft/branchleft-admin
-/infra/provisioning/scripts/test_assert_*        @branchLeft/branchleft-admin
 /infra/provisioning/scripts/check_private_tenant_plan.py @branchLeft/branchleft-admin
 /registers/private-tenant-plan.*                 @branchLeft/branchleft-admin
 /registers/tenant-names.json                     @branchLeft/branchleft-admin

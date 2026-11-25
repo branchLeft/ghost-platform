@@ -61,13 +61,6 @@ const WORKFLOWS = [
     publish: /^ {8}run: pnpm publish "\$\{TARBALL\}" --no-git-checks$/m,
     guarded: false,
   },
-  {
-    file: 'speckify.yml',
-    job: 'publish',
-    ref: 'refs/heads/main',
-    publish: /npm publish "\$\{TARBALL\}" --registry https:\/\/npm\.pkg\.github\.com$/m,
-    guarded: true,
-  },
 ];
 
 for (const { file, job: jobName, ref, publish, guarded } of WORKFLOWS) {
@@ -152,13 +145,73 @@ for (const { file, job: jobName, ref, publish, guarded } of WORKFLOWS) {
   });
 }
 
-test('speckify attests and publishes only a version that was packed, under one condition', () => {
-  const job = jobBlock(uncommented('.github/workflows/speckify.yml'), 'publish');
-  const list = steps(job);
-  const condition = (name) =>
-    list.find((s) => s.name.startsWith(name)).text.match(/^ {8}if: (.*)$/m)?.[1];
-  assert.equal(condition('Attest the tarball'), "steps.pack.outputs.publish == 'true'");
-  assert.equal(condition('Publish to GitHub Packages'), "steps.pack.outputs.publish == 'true'");
+// speckify.yml publishes through Speckify's own composite action at a pinned
+// commit: `build` for the drift guard, then `publish`, which packs, attests and
+// publishes the same tarballs. The generic checks above do not describe it.
+const SPECKIFY_FILE = 'speckify.yml';
+const SPECKIFY_SHA = 'b9be3996ac8684f44bc6ff53dbc4d5cc787816bd';
+const SPECKIFY_LINE = `branchLeft/speckify@${SPECKIFY_SHA} # v0.1.2`;
+const speckifyText = uncommented(`.github/workflows/${SPECKIFY_FILE}`);
+const speckifyPublish = jobBlock(speckifyText, 'publish');
+const speckifySteps = steps(speckifyPublish);
+const speckifyStep = (name) => speckifySteps.find((s) => s.name.startsWith(name));
+const speckifyWith = (step) =>
+  Object.fromEntries(
+    [...step.text.matchAll(/^ {10}([a-z-]+): (.*)$/gm)].map((m) => [
+      m[1],
+      m[2].replace(/^'|'$/g, ''),
+    ])
+  );
+
+test('speckify.yml: Speckify is used only at the reviewed commit, and nothing publishes directly', () => {
+  const uses = [...speckifyText.matchAll(/^\s*(?:- )?uses: (\S.*)$/gm)]
+    .map((m) => m[1])
+    .filter((u) => u.startsWith('branchLeft/speckify@'));
+  assert.deepEqual(uses, [SPECKIFY_LINE, SPECKIFY_LINE], 'build and publish, both at the commit');
+  assert.doesNotMatch(speckifyText, /(?:pnpm|npm) publish/, 'no direct publish command');
+});
+
+test('speckify.yml: the publish job builds, then runs speckify publish with attestation on', () => {
+  const build = speckifyStep('Generate the packages');
+  const publish = speckifyStep('speckify publish');
+  assert.ok(build && publish, 'the job has the build and the publish steps');
+  assert.deepEqual(speckifyWith(build).command, 'build');
+  assert.deepEqual(speckifyWith(publish).command, 'publish');
+  assert.deepEqual(speckifyWith(publish).attest, 'true');
+  assert.ok(speckifySteps.indexOf(build) < speckifySteps.indexOf(publish), 'build before publish');
+});
+
+test('speckify.yml: the attestation identity is literal, equal to this file, never read from the run', () => {
+  const w = speckifyWith(speckifyStep('speckify publish'));
+  assert.equal(w['attestation-repo'], REPO);
+  assert.equal(w['attestation-signer-workflow'], `${REPO}/.github/workflows/${SPECKIFY_FILE}`);
+  assert.equal(w['attestation-source-ref'], 'refs/heads/main');
+  assert.doesNotMatch(speckifyPublish, /workflow_ref|job_workflow_ref|github\.(?:workflow|job)/);
+});
+
+test('speckify.yml: the publish job runs only on a push to main, with no step-level skip', () => {
+  const condition = speckifyPublish.match(/^ {4}if: (.*)$/m)?.[1];
+  assert.equal(condition, "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'");
+  assert.doesNotMatch(speckifyPublish, /^ {6}if: /m, 'no step-level if that could skip publishing');
+});
+
+test('speckify.yml: the signing grants sit on the publish job, once, and nowhere else', () => {
+  const grants = permissions(speckifyPublish);
+  for (const grant of SIGNING) assert.ok(grants.includes(grant), `${grant} is on the job`);
+  assert.deepEqual(
+    grants.filter((g) => !SIGNING.includes(g)),
+    ['contents: read', 'packages: write']
+  );
+  assert.equal(speckifyText.match(/id-token:/g).length, 1, 'id-token appears once');
+  assert.equal(speckifyText.match(/attestations:/g).length, 1, 'attestations appears once');
+});
+
+test('speckify.yml: the only secret used is the run token', () => {
+  const names = [...speckifyText.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]);
+  assert.ok(
+    names.every((n) => n === 'GITHUB_TOKEN'),
+    `unexpected secret: ${names}`
+  );
 });
 
 test('speckify check job is not given the signing grants', () => {

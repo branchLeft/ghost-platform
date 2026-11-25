@@ -1,0 +1,79 @@
+name: Tenant boot CI
+
+# Boots the pinned tenant image under the render core's current compose.yml and
+# asserts Ghost answers 200 on /. Separates a failed
+# tenant restart caused by the operator-placed compose from one caused by the
+# image itself. The test is render-core/test/tenant-live-boot.test.ts.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'render-core/**'
+      - '.github/workflows/tenant-boot-ci.yml'
+  pull_request:
+    paths:
+      - 'render-core/**'
+      - '.github/workflows/tenant-boot-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  boot:
+    name: Boot the pinned tenant image under the rendered compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: render-core
+    env:
+      TENANT_BOOT_IMAGE: ghcr.io/branchleft/ghost-tenant@sha256:6209d10360e108d143e2318350fda42ee44453f96108b1e8eaf572c47129db9e
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: render-core/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: pnpm
+          cache-dependency-path: render-core/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GHCR for the pinned image
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull the pinned image by digest
+        run: docker pull "$TENANT_BOOT_IMAGE"
+
+      # The gate is a safety class: its own tests run before the boot step, so a
+      # broken gate fails here rather than passing a boot it should refuse.
+      - name: Gate unit tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      # The JSON report is the evidence: the gate reads the live test's own
+      # status and fails the job unless it passed, so a skip cannot pass as green.
+      - name: Boot the rendered stack and expect 200 on /
+        run: |
+          set -o pipefail
+          pnpm exec vitest run test/tenant-live-boot.test.ts --reporter=default --reporter=json --outputFile.json=vitest-boot.json
+          python3 scripts/assert_live_boot_ran.py vitest-boot.json

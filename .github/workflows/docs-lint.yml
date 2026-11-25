@@ -17,5 +17,105 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  docs-lint:
+  # Decides whether the reusable lint has input. It runs on every event, so the
+  # gate below always has a result to read. The lint is skipped only when every
+  # changed path is outside what it reads (an allow-list in
+  # scripts/ci_skip_decision.py); any other path, a deletion, a rename, an empty
+  # diff or a diff that cannot be read runs it.
+  changes:
+    name: Decide whether docs-lint has input
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      scan: ${{ steps.changes.outputs.scan }}
+    steps:
+      # Full history, so the base commit of the diff below exists on the runner.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # The table checks every case the decision must get right. It runs here, on
+      # the head, so a change to the decision that breaks a case fails this job.
+      - name: Test the decision table
+        run: python3 -m unittest discover -s scripts -p 'test_ci_skip_decision.py'
+
+      # The decision is the script's, and it is read from the base commit, so a
+      # pull request cannot judge its own change: the copy in its head decides
+      # only when the base has none yet. A base or head the runner cannot resolve
+      # runs the lint. The script exits nonzero on a diff it cannot read, which
+      # fails this step and so the gate.
+      - name: Decide whether docs-lint has input
+        id: changes
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          decision=run
+          if git cat-file -e "${BASE}^{commit}" 2>/dev/null && git cat-file -e "${HEAD}^{commit}" 2>/dev/null; then
+            script="${RUNNER_TEMP}/ci_skip_decision.py"
+            if git cat-file -e "${BASE}:scripts/ci_skip_decision.py" 2>/dev/null; then
+              git show "${BASE}:scripts/ci_skip_decision.py" > "$script"
+            else
+              git show "${HEAD}:scripts/ci_skip_decision.py" > "$script"
+            fi
+            git diff --no-renames --name-status -z "${BASE}...${HEAD}" > "${RUNNER_TEMP}/changes.z"
+            decision=$(python3 -I "$script" docs-lint < "${RUNNER_TEMP}/changes.z")
+          fi
+          case "$decision" in
+            skip) scan=false ;;
+            run) scan=true ;;
+            *) echo "The decision printed: '${decision}'"; exit 1 ;;
+          esac
+          echo "scan=${scan}" >> "$GITHUB_OUTPUT"
+          echo "docs-lint has input to scan: ${scan}"
+
+  # The reusable lint. Its check reports as "docs-lint-run / docs-lint", so it
+  # does not clash with the required context the gate below reports.
+  docs-lint-run:
+    needs: changes
+    if: needs.changes.outputs.scan == 'true'
+    permissions:
+      contents: read
     uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
+
+  # The check the ruleset requires: "docs-lint / docs-lint". The job's name is
+  # set to that context, and it always runs, so a change with nothing to scan
+  # still reports. It fails unless the lint succeeded whenever the decision above
+  # found input to scan.
+  docs-lint:
+    name: docs-lint / docs-lint
+    needs: [changes, docs-lint-run]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require the lint when it had input
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          SCAN: ${{ needs.changes.outputs.scan }}
+          LINT: ${{ needs.docs-lint-run.result }}
+        run: |
+          set -euo pipefail
+          if [ "$CHANGES" != "success" ]; then
+            echo "The change decision reported: $CHANGES"
+            exit 1
+          fi
+          if [ "$SCAN" = "false" ]; then
+            echo "Every changed path is outside what docs-lint reads, so there was nothing to scan. This is a pass."
+            exit 0
+          fi
+          if [ "$SCAN" != "true" ]; then
+            echo "The change decision did not report whether there was input: '$SCAN'"
+            exit 1
+          fi
+          if [ "$LINT" != "success" ]; then
+            echo "The docs-lint run reported: $LINT"
+            exit 1
+          fi
