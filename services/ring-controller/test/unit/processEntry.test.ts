@@ -88,18 +88,22 @@ describe('runReleaseFromProcess', () => {
     expect(Object.keys(entry)).not.toContain('runRelease');
   });
 
+  it('gives the host entry the same environment object the process holds', () => {
+    expect(real.processEnvironment()).toBe(process.env);
+  });
+
   it('reads the environment at call time, not when the module was loaded', async () => {
     expect(await refusesProcessKey(real)).toBe(true);
   });
 
   const sabotages: [string, Mutation][] = [
-    ['an empty environment', { file: 'processEntry.ts', find: 'process.env)', replace: '{})' }],
+    ['an empty environment', { file: 'processEntry.ts', find: 'process.env;', replace: '{};' }],
     [
       'a scrubbed copy',
       {
         file: 'processEntry.ts',
-        find: 'process.env)',
-        replace: `Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('ANTHROPIC_'))))`,
+        find: 'process.env;',
+        replace: `Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('ANTHROPIC_')));`,
       },
     ],
   ];

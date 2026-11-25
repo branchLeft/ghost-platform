@@ -1,7 +1,8 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OwnerDb } from '../src/owner/index.js';
-import { tenantRegister } from '../src/schema.js';
+import { account, tenantRegister } from '../src/schema.js';
+import { TenantNameTakenError } from '../src/tenantName.js';
 import {
   InvalidTenantKindError,
   TENANT_KINDS,
@@ -10,7 +11,15 @@ import {
   bindTenant,
   parseTenantKind,
 } from '../src/tenant/index.js';
-import { ORG_A, ORG_B, TENANT_A, TENANT_B, createFixture, type Fixture } from './helpers.js';
+import {
+  ORG_A,
+  ORG_B,
+  TENANT_A,
+  TENANT_B,
+  createFixture,
+  newAccount,
+  type Fixture,
+} from './helpers.js';
 
 let fx: Fixture;
 let db: TenantDb;
@@ -89,11 +98,12 @@ describe('the tenant reads its own kind from the register', () => {
       db.run(bindTenant(TENANT_B), (tx) => tx.update(tenantRegister).set({ kind: 'REAL' }))
     );
     expect(promote).toMatch(/permission denied/);
+    const accountId = await newAccount(fx.adminDb, 'org-self');
     const insert = await dbMessage(
       db.run(bindTenant(NEW_TENANT), (tx) =>
         tx
           .insert(tenantRegister)
-          .values({ tenantId: NEW_TENANT, zitadelOrgId: 'org-self', kind: 'REAL' })
+          .values({ tenantId: NEW_TENANT, zitadelOrgId: 'org-self', kind: 'REAL', accountId })
       )
     );
     expect(insert).toMatch(/permission denied/);
@@ -108,6 +118,41 @@ describe('the owner registers a tenant with a kind', () => {
     const listed = (await owner.listTenants()).find((t) => t.tenantId === NEW_TENANT);
     expect(listed).toEqual({ tenantId: NEW_TENANT, zitadelOrgId: 'org-new', kind: 'REAL' });
     expect(await db.ownKind(bindTenant(NEW_TENANT))).toBe('REAL');
+  });
+
+  it('gives the registered tenant an account under its own organisation', async () => {
+    const owner = new OwnerDb(fx.owner);
+    const id = '55555555-5555-4555-8555-555555555555';
+    await owner.registerTenant({ tenantId: id, zitadelOrgId: 'org-account', kind: 'REAL' });
+    const linked = await fx.adminDb
+      .select({ identityOrgId: account.identityOrgId })
+      .from(tenantRegister)
+      .innerJoin(account, eq(account.accountId, tenantRegister.accountId))
+      .where(eq(tenantRegister.tenantId, id));
+    expect(linked).toEqual([{ identityOrgId: 'org-account' }]);
+  });
+
+  it('leaves no account behind when the tenant name is taken', async () => {
+    const owner = new OwnerDb(fx.owner);
+    await owner.registerTenant({
+      tenantId: '44444444-4444-4444-8444-444444444444',
+      zitadelOrgId: 'org-named-first',
+      kind: 'REAL',
+      tenantName: 'account-name-taken',
+    });
+    await expect(
+      owner.registerTenant({
+        tenantId: '33333333-3333-4333-8333-333333333333',
+        zitadelOrgId: 'org-named-second',
+        kind: 'REAL',
+        tenantName: 'account-name-taken',
+      })
+    ).rejects.toThrow(TenantNameTakenError);
+    const orphan = await fx.adminDb
+      .select({ accountId: account.accountId })
+      .from(account)
+      .where(eq(account.identityOrgId, 'org-named-second'));
+    expect(orphan).toEqual([]);
   });
 
   it.each([undefined, null, '', 'real', 'demo', 'OTHER'])(
@@ -125,12 +170,17 @@ describe('the owner registers a tenant with a kind', () => {
 
 describe('the table refuses a bad kind even to a statement that skips the code', () => {
   const id = '88888888-8888-4888-8888-888888888888';
+  let accountId: string;
+
+  beforeAll(async () => {
+    accountId = await newAccount(fx.adminDb, 'org-raw');
+  });
 
   it.each([null, 'real', 'demo', '', 'TENANT'])('refuses a direct insert of %j', async (kind) => {
     const message = await dbMessage(
       fx.adminDb
         .insert(tenantRegister)
-        .values({ tenantId: id, zitadelOrgId: 'org-raw', kind: kind as never })
+        .values({ tenantId: id, zitadelOrgId: 'org-raw', kind: kind as never, accountId })
     );
     expect(message).toMatch(
       kind === null

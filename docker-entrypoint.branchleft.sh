@@ -113,11 +113,129 @@ check_storage_feature() {
     fi
 }
 
+# --- Bundled-theme refresh --------------------------------------------------
+# The upstream entrypoint seeds a bundled theme into the content volume only
+# when that theme directory is absent, so a site whose volume already holds an
+# older copy keeps it and shows no platform footer credit
+# (themes/footer-credit/README.md). Replace such a copy with the image's own,
+# which is the copy a new site is seeded with. A copy that already carries the
+# credit partial is left alone, and a theme the image does not bundle is never
+# touched. A copy is replaced only while its files match a tree a shipped image
+# installed (themes/shipped-trees.txt, written into the image as
+# bundled-theme-pins.txt, one "name sha256" line per tree): a copy the tenant has
+# changed matches none and is left as it is.
+# The new copy is staged beside the old one and renamed into place, so a failed
+# copy never leaves a half-written live theme, and the replaced copy is moved
+# aside into the content directory, not deleted. A failure prints a warning and
+# leaves the old theme live; it never stops Ghost from starting.
+# See docker-entrypoint.branchleft.md#bundled-theme-refresh.
+
+# sha256 of a file, as hex. Fails (non-zero) when the file cannot be read, so a
+# partly readable tree never hashes as if it were whole.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        out=$(sha256sum "$1") || return 1
+    else
+        out=$(shasum -a 256 "$1") || return 1
+    fi
+    printf '%s\n' "${out%% *}"
+}
+
+# The content hash themes/lib/treehash.mjs computes, in POSIX sh: sha256 of the
+# sorted "<sha256 of file>  <path>" lines (a symlink as "link:<target>  <path>").
+# Returns non-zero when any part of the tree cannot be listed or read, so the
+# caller leaves the copy alone instead of comparing a partial hash.
+tree_sha256() {
+    root=$1
+    rels=$(cd "$root" && find . \( -type f -o -type l \)) || return 1
+    rels=$(printf '%s\n' "$rels" | sed 's|^\./||' | LC_ALL=C sort) || return 1
+    lines=$(printf '%s\n' "$rels" | while IFS= read -r rel; do
+        if [ -L "$root/$rel" ]; then
+            printf 'link:%s  %s\n' "$(readlink "$root/$rel")" "$rel" || exit 1
+        else
+            digest=$(sha256_of "$root/$rel") || exit 1
+            printf '%s  %s\n' "$digest" "$rel"
+        fi
+    done) || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s\n' "$lines" | sha256sum | cut -d' ' -f1
+    else
+        printf '%s\n' "$lines" | shasum -a 256 | cut -d' ' -f1
+    fi
+}
+
+refresh_bundled_themes() {
+    content="${GHOST_CONTENT:-/var/lib/ghost/content}"
+    install_dir="${GHOST_INSTALL:-/var/lib/ghost}"
+    seed_themes="$install_dir/content.orig/themes"
+    pins="$install_dir/bundled-theme-pins.txt"
+    site_themes="$content/themes"
+    backup="$content/theme-backup-pre-footer-credit"
+    partial="partials/platform-footer-credit.hbs"
+
+    [ -d "$seed_themes" ] || return 0
+    for src in "$seed_themes"/*; do
+        [ -d "$src" ] || continue
+        name=$(basename "$src")
+        target="$site_themes/$name"
+        # Only a real directory is refreshed: a symlink (the base image's own
+        # themes) is already the patched copy, and an absent theme is seeded
+        # by the upstream entrypoint itself.
+        [ -d "$target" ] && [ ! -L "$target" ] || continue
+        # Never replace a copy with one that lacks the credit.
+        [ -e "$src/$partial" ] || continue
+        [ -e "$target/$partial" ] && continue
+
+        # Only a copy as a shipped image installed it is replaced: its files must
+        # hash to one of the listed trees for this theme. Anything else is the
+        # tenant's own, and is left alone.
+        # A failure here warns and leaves the theme alone: Ghost still starts.
+        if ! digest=$(tree_sha256 "$target"); then
+            echo "WARNING: could not hash bundled theme $name; it is left as it is" >&2
+            continue
+        fi
+        if ! awk -v n="$name" -v h="$digest" '$1 == n && $2 == h { found = 1 } END { exit !found }' "$pins" 2>/dev/null; then
+            echo "left bundled theme $name untouched: it matches no shipped tree (tenant-changed or unknown), so it keeps its credit gap" >&2
+            continue
+        fi
+
+        owner=""
+        if [ "$(id -u)" = '0' ]; then
+            if ! owner=$(stat -c '%u:%g' "$target"); then
+                echo "WARNING: could not read the owner of bundled theme $name; it is left as it is" >&2
+                continue
+            fi
+        fi
+        staged="$site_themes/.$name.refresh-$$"
+        rm -rf "$staged"
+        if ! { cp -RL "$src" "$staged" && { [ -z "$owner" ] || chown -R "$owner" "$staged"; }; }; then
+            rm -rf "$staged"
+            echo "WARNING: could not copy bundled theme $name; the previous copy stays live" >&2
+            continue
+        fi
+        stamp=$(date -u +%Y%m%dT%H%M%SZ)
+        if ! mkdir -p "$backup" || ! mv "$target" "$backup/$name.$stamp"; then
+            rm -rf "$staged"
+            echo "WARNING: could not move the previous $name theme aside; it stays live" >&2
+            continue
+        fi
+        if ! mv "$staged" "$target"; then
+            mv "$backup/$name.$stamp" "$target" 2>/dev/null || true
+            rm -rf "$staged"
+            echo "WARNING: could not put bundled theme $name in place; the previous copy stays live" >&2
+            continue
+        fi
+        echo "refreshed bundled theme $name (previous copy kept in $backup)" >&2
+    done
+    return 0
+}
+
 case "$*" in
     "node current/index.js"|"node "*"current/index.js"*)
         check_storage_feature images
         check_storage_feature media
         check_storage_feature files
+        refresh_bundled_themes || echo "WARNING: the bundled-theme refresh failed; Ghost starts with the themes as they are" >&2
         ;;
 esac
 

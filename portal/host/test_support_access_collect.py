@@ -88,7 +88,7 @@ class Exporter:
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port: int = self.server.server_address[1]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.01), daemon=True)
 
     def __enter__(self) -> Exporter:
         self.thread.start()
@@ -137,7 +137,7 @@ class Rig:
         (root / "docker.json").write_text(
             json.dumps({"ps": ps or {"stdout": CONTAINER + "\n"}, "exec": run or {"stderr": "support-access: alpha: recorded state=closed\n"}})
         )
-        self.cfg = mod.Config(docker=str(stand_in), fetch_timeout_s=1.0, list_timeout_s=10.0, exec_timeout_s=10.0)
+        self.cfg = mod.Config(docker=str(stand_in), fetch_timeout_s=0.5, list_timeout_s=10.0, exec_timeout_s=10.0)
 
     def calls(self) -> list[dict[str, Any]]:
         log = self.base / "calls.log"
@@ -191,8 +191,8 @@ def check_a_host_that_cannot_be_read_hands_nothing_over(mod: types.ModuleType) -
         "answers 404": lambda: Exporter(status=404, body=TEXT_ONE.encode()),
         "is not a path of metrics": lambda: Exporter(body=TEXT_ONE.encode(), path="/other"),
         "sends more than a megabyte": lambda: Exporter(body=b"a" * (mod.MAX_BODY_BYTES + 1)),
-        "is silent for longer than the limit": lambda: Exporter(body=TEXT_ONE.encode(), delay_s=2.0),
-        "drips its answer past the limit": lambda: Exporter(body=b"abcdefgh", drip_s=0.4),
+        "is silent for longer than the limit": lambda: Exporter(body=TEXT_ONE.encode(), delay_s=1.0),
+        "drips its answer past the limit": lambda: Exporter(body=b"abcdefgh", drip_s=0.1),
         "is not listening": closed_port,
     }
     for name, make in cases.items():

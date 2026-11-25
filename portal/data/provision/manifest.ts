@@ -162,6 +162,9 @@ const TENANT_BILLING = '0014_tenant_billing';
 const DEMO_EXTENSION = '0016_demo_extension_request';
 const TENANT_ERASURE = '0015_tenant_erasure_request';
 const PROFESSIONAL_ENQUIRY = '0017_professional_enquiry';
+const ACCOUNT = '0019_account_entity';
+const FEDERATION = '0018_federation_setting';
+const OPEN_CLAIM = '0020_demo_one_open_claim';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -244,11 +247,37 @@ export function manifest(major: number, database: string): readonly ManifestObje
     // TenantDb.ownRegistration, ownKind and scopeForOrganisation read; OwnerDb
     // registerTenant inserts, listTenants and listHealth read. Nothing
     // updates or deletes a registration, so a tenant cannot change its own
-    // kind (the tenant role holds SELECT alone).
+    // kind: the tenant role holds SELECT on the table and, from the federation
+    // migration, UPDATE on the three federation columns alone (TenantDb.saveFederation).
     {
       kind: 'table',
       identity: 'portal.tenant_register',
       since: REGISTER,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['SELECT'] },
+        { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT'] },
+      ],
+      added: [
+        {
+          since: FEDERATION,
+          grants: [
+            {
+              grantee: 'tenantRole',
+              privileges: ['UPDATE'],
+              columns: ['federation_enabled', 'federation_updated_by', 'federation_updated_at'],
+            },
+          ],
+        },
+      ],
+    },
+    // TenantDb reads its own account through its register row; OwnerDb
+    // registerTenant inserts the account a new tenant belongs to, and
+    // listAccounts reads. Nothing updates or deletes an account, and a tenant
+    // holds SELECT alone.
+    {
+      kind: 'table',
+      identity: 'portal.account',
+      since: ACCOUNT,
       grants: [
         { grantee: 'tenantRole', privileges: ['SELECT'] },
         { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT'] },
@@ -468,7 +497,15 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'provisionerRole', privileges: ['SELECT'] },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
-      added: [{ since: STATUS_READ, grants: [{ grantee: 'prospectRole', ...STATUS_COLUMNS }] }],
+      added: [
+        { since: STATUS_READ, grants: [{ grantee: 'prospectRole', ...STATUS_COLUMNS }] },
+        // The lifecycle worker clears claim_open, and only that: the column grant
+        // and the row policy's WITH CHECK (claim_open = false) allow nothing else.
+        {
+          since: OPEN_CLAIM,
+          grants: [{ grantee: 'provisionerRole', privileges: ['UPDATE'], columns: ['claim_open'] }],
+        },
+      ],
     },
     // ProspectDb.requestExtension inserts, and the table's row policy admits
     // the insert only for the demo whose request holds the address the
@@ -502,6 +539,7 @@ export function rowSecurityEnabled(want: RowSecurity, applied: readonly string[]
 /** Row security on each manifest table, exactly (M08). */
 export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.tenant_register': { enabled: true, forced: false },
+  'portal.account': { enabled: true, forced: false },
   'portal.health_reading': { enabled: true, forced: false },
   'portal.support_access_reading': { enabled: true, forced: false },
   'portal.support_access_request': { enabled: true, forced: false },
@@ -562,7 +600,24 @@ export interface NamedIndex {
 export const NAMED_INDEXES: readonly NamedIndex[] = [
   // One open support-access request per tenant; any number dealt with.
   { identity: 'portal.support_access_request_one_open', since: SUPPORT_ACCESS },
+  // One open request per verified address; any number of FAILED ones.
+  { identity: 'portal.demo_request_one_open_claim_per_address', since: OPEN_CLAIM },
 ];
+
+/**
+ * The policies the server holds once `applied` is in. A later migration may rewrite a
+ * policy: the newest applied entry for its table and name is the one expected.
+ */
+export function policiesAt(applied: readonly string[]): readonly PolicyEntry[] {
+  const held = new Map<string, PolicyEntry>();
+  for (const entry of POLICIES) {
+    if (!applied.includes(entry.since)) continue;
+    const key = `${entry.table} ${entry.name}`;
+    const kept = held.get(key);
+    if (kept === undefined || entry.since > kept.since) held.set(key, entry);
+  }
+  return [...held.values()];
+}
 
 /** The row-security policies, exactly (M20), as the server deparses them. */
 export interface PolicyEntry {
@@ -609,6 +664,16 @@ export const POLICIES: readonly PolicyEntry[] = [
     REGISTER,
     'r',
     '(zitadel_org_id = public.bound_organisation())',
+    'null'
+  ),
+  policy(
+    'portal.account',
+    'tenant_account',
+    ACCOUNT,
+    'r',
+    // As PostgreSQL deparses it: a sub-select prints over three lines.
+    '(account_id = ( SELECT tenant_register.account_id\n   FROM portal.tenant_register\n' +
+      '  WHERE (tenant_register.tenant_id = public.bound_tenant())))',
     'null'
   ),
   policy('portal.health_reading', 'tenant_isolation', HEALTH, '*', `(${BOUND})`, `(${BOUND})`),
@@ -714,6 +779,17 @@ export const POLICIES: readonly PolicyEntry[] = [
   // column to `public.bound_address()` and nothing else. The lifecycle worker
   // reads every request. The owner role bypasses row security by attribute.
   policy('portal.demo_request', 'request_insert', STATUS_READ, 'a', 'null', 'true', 'prospectRole'),
+  // The front door may insert only a request whose claim is open: its insert is
+  // not granted by column, so the policy pins claim_open to the default.
+  policy(
+    'portal.demo_request',
+    'request_insert',
+    OPEN_CLAIM,
+    'a',
+    'null',
+    'claim_open',
+    'prospectRole'
+  ),
   policy(
     'portal.demo_request',
     'own_request',
@@ -731,7 +807,19 @@ export const POLICIES: readonly PolicyEntry[] = [
     'true',
     'null',
     'provisionerRole'
-  ), // The front door files an extension request only for the demo whose request
+  ),
+  // The lifecycle worker clears claim_open when a demo records FAILED, and may
+  // set nothing else: the check admits only the value false.
+  policy(
+    'portal.demo_request',
+    'provisioner_close_claim',
+    OPEN_CLAIM,
+    'w',
+    'true',
+    '(claim_open = false)',
+    'provisionerRole'
+  ),
+  // The front door files an extension request only for the demo whose request
   // holds the address its transaction bound; the lifecycle worker reads.
   policy(
     'portal.demo_extension_request',
@@ -829,6 +917,42 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
             'tenant_register_tenant_name_unique ON portal.tenant_register USING btree (tenant_name)',
         ],
       },
+      // The federation switch: off by default, and never on for a demo slot.
+      {
+        since: FEDERATION,
+        lines: [
+          `column federation_enabled boolean notnull=true ${PLAIN}`,
+          'default federation_enabled false',
+          `column federation_updated_by text notnull=false ${PLAIN}`,
+          `column federation_updated_at timestamp with time zone notnull=false ${PLAIN}`,
+          "constraint tenant_register_federation_demo_off CHECK ((NOT (federation_enabled AND (kind = 'DEMO'::text))))",
+        ],
+      },
+      // Every tenant belongs to an account, backfilled by the account migration.
+      {
+        since: ACCOUNT,
+        lines: [
+          `column account_id uuid notnull=true ${PLAIN}`,
+          'constraint tenant_register_account_id_account_account_id_fk FOREIGN KEY ' +
+            '(account_id) REFERENCES portal.account(account_id)',
+        ],
+      },
+    ],
+  },
+  'portal.account': {
+    since: ACCOUNT,
+    lines: [
+      `column account_id uuid notnull=true ${PLAIN}`,
+      `column identity_org_id text notnull=true ${PLAIN}`,
+      `column created_at timestamp with time zone notnull=true ${PLAIN}`,
+      'default account_id gen_random_uuid()',
+      'default created_at now()',
+      'constraint account_pkey PRIMARY KEY (account_id)',
+      'constraint account_identity_org_id_unique UNIQUE (identity_org_id)',
+      'index portal.account_pkey CREATE UNIQUE INDEX account_pkey ' +
+        'ON portal.account USING btree (account_id)',
+      'index portal.account_identity_org_id_unique CREATE UNIQUE INDEX ' +
+        'account_identity_org_id_unique ON portal.account USING btree (identity_org_id)',
     ],
   },
   'portal.health_reading': {
@@ -1209,6 +1333,27 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         'portal.demo_request USING btree (demo_id)',
       'index portal.demo_request_verified_address_unique CREATE UNIQUE INDEX ' +
         'demo_request_verified_address_unique ON portal.demo_request USING btree (verified_address)',
+    ],
+    // One open request per verified address, replacing the all-time constraint.
+    revised: [
+      { since: OPEN_CLAIM, replaces: 'constraint demo_request_verified_address_unique', lines: [] },
+      {
+        since: OPEN_CLAIM,
+        replaces: 'index portal.demo_request_verified_address_unique',
+        lines: [],
+      },
+    ],
+    added: [
+      {
+        since: OPEN_CLAIM,
+        lines: [
+          `column claim_open boolean notnull=true ${PLAIN}`,
+          'default claim_open true',
+          'index portal.demo_request_one_open_claim_per_address CREATE UNIQUE INDEX ' +
+            'demo_request_one_open_claim_per_address ON portal.demo_request USING btree ' +
+            '(verified_address) WHERE claim_open',
+        ],
+      },
     ],
   },
   'portal.demo_extension_request': {

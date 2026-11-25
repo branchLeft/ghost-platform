@@ -27,10 +27,10 @@ const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
 const WORKFLOW = read(WORKFLOW_PATH);
 const DOCKERFILE = read('services/demo-gate/Dockerfile');
 
-// The base the image scan judged: node:26.13.0-alpine, linux/amd64 manifest.
+// The base the image scan judged: node:26.13.1-alpine3.24, linux/amd64 manifest.
 // The same digest portal/Dockerfile pins.
 const BASE =
-  'node:26.13.0-alpine@sha256:b2646ba6d774dc22c24d89fc37103fcf4c4467e870c78b9519aa403300b2835a';
+  'node:26.13.1-alpine3.24@sha256:a90bda2938f2b57112d94ee2e3722c5346efca76e4a034042b5223197567a16c';
 const PNPM = 'pnpm@11.17.0';
 
 // Whole-line comments and trailing ones (a `#` after whitespace) both go, so
@@ -167,8 +167,10 @@ export function dockerfileProblems(source) {
     found.push('the base image is not the one FROM line pinned to the scanned digest');
   }
   if (/^FROM\s+[^\s@]+\s*$/m.test(text)) found.push('the base image is a bare tag');
-  if (!/^RUN apk upgrade --no-cache zlib$/m.test(text)) {
-    found.push('zlib is not upgraded past CVE-2026-4738 before anything else runs');
+  if (!/^RUN apk upgrade --no-cache zlib libcrypto3 libssl3$/m.test(text)) {
+    found.push(
+      'zlib, libcrypto3 and libssl3 are not upgraded before anything else runs (CVE-2026-4738 and the 3.5.9-r1 fixes)'
+    );
   }
   const runs = text.split(/^RUN\s/m).slice(1);
   const install = runs.find((run) => run.includes('pnpm install'));
@@ -309,8 +311,16 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
 test('the Dockerfile checker reports each way the image can go wrong', () => {
   const cases = [
     [swap(DOCKERFILE, `FROM ${BASE}`, 'FROM node:26.13.0-alpine'), 'base image'],
-    [swap(DOCKERFILE, `FROM ${BASE}`, `FROM ${BASE.replace('b2646', 'c2646')}`), 'base image'],
-    [swap(DOCKERFILE, 'RUN apk upgrade --no-cache zlib', 'RUN true'), 'zlib'],
+    [swap(DOCKERFILE, `FROM ${BASE}`, `FROM ${BASE.replace('a90bda', 'c90bda')}`), 'base image'],
+    [swap(DOCKERFILE, 'RUN apk upgrade --no-cache zlib libcrypto3 libssl3', 'RUN true'), 'zlib'],
+    [
+      swap(
+        DOCKERFILE,
+        'RUN apk upgrade --no-cache zlib libcrypto3 libssl3',
+        'RUN apk upgrade --no-cache zlib'
+      ),
+      'zlib',
+    ],
     [
       swap(
         DOCKERFILE,
