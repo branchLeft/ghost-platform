@@ -16,7 +16,7 @@
 # sensitive; ask whether weakening it would disable a guard. Owner ruling.
 #
 # GitHub applies the LAST matching line. There is deliberately no catch-all line: a
-# path that no line names has no owner. The seven template lines of
+# path that no line names has no owner. The five template lines of
 # branchLeft/standards (SYNC-1) are the final lines of the file.
 # infra/provisioning/scripts/test_codeowners_ownership.py checks this file.
 
@@ -138,7 +138,7 @@
 /infra/tenant/LICENSE                            @branchLeft/branchleft-admin
 /portal/apps/src/tenant/explainerPages.ts        @branchLeft/branchleft-admin
 
-# branchLeft/standards templates/codeowners, synced whole (SYNC-1: these seven
+# branchLeft/standards templates/codeowners, synced whole (SYNC-1: these five
 # lines must be this file's final lines, in this order — GitHub applies the
 # LAST matching CODEOWNERS pattern regardless of specificity, so anything
 # after or between them would silently take ownership of an escape hatch).
@@ -146,6 +146,4 @@
 /.standards.mode         @branchLeft/branchleft-admin
 /.docs-lint*             @branchLeft/branchleft-admin
 /.standards-db-tooling   @branchLeft/branchleft-admin
-/.github/CODEOWNERS      @branchLeft/branchleft-admin
-/.github/workflows/standards.yml  @branchLeft/branchleft-admin
-/.github/workflows/docs-lint.yml  @branchLeft/branchleft-admin
+/.github/                @branchLeft/branchleft-admin
