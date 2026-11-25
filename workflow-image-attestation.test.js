@@ -31,6 +31,7 @@ const IMAGE_WORKFLOWS = [
   'percona-image.yml',
   'mysqld-exporter-image.yml',
   'mailgun-shim-image.yml',
+  'odask-image.yml',
 ];
 
 for (const name of IMAGE_WORKFLOWS) {

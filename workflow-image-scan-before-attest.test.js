@@ -35,6 +35,7 @@ const PUBLISHERS = {
   'percona-image.yml': 'ghcr.io/branchleft/percona-server',
   'mysqld-exporter-image.yml': 'ghcr.io/branchleft/mysqld-exporter',
   'mailgun-shim-image.yml': 'ghcr.io/branchleft/mailgun-shim',
+  'odask-image.yml': 'ghcr.io/branchleft/odask',
   // A workflow that publishes two images from one push job lists both, in the
   // order of PAIR_SUFFIXES. Each has its own scan and attest job (see pairProblems).
   'activitypub-image.yml': [
@@ -591,14 +592,6 @@ test('every workflow that pushes an image is covered here or named with a reason
   }
 });
 
-test('the build-only image workflows push nothing, so they need no scan', () => {
-  for (const file of ['odask-image.yml']) {
-    const text = uncommented(read(file));
-    assert.doesNotMatch(text, PUSHES, `${file} pushes an image`);
-    assert.doesNotMatch(text, /packages:\s*write|id-token/, `${file} holds a publish credential`);
-  }
-});
-
 test('artifact attestation is signed only through the shared action, bar the broker release', () => {
   for (const file of fs.readdirSync(WORKFLOWS).filter((f) => f.endsWith('.yml'))) {
     if (file === 'broker-release.yml') continue;
@@ -767,13 +760,16 @@ test('only the allow-listed workflows pass exemptions-path, each at a file that 
 
 // The owner's 30-day acceptance of five OpenSSL findings no update can clear:
 // the system libssl and libcrypto packages of the tenant and portal images,
-// granted 2026-11-23, lapsing 2026-12-23, and of the demo gate image, granted
-// 2026-11-24, lapsing 2026-12-24. The exemption file may hold exactly these
-// thirty entries (five advisories, two packages, three images) for those
-// packages, and nothing else for those three images. Widening it by an advisory,
-// a package or an image, or giving an entry no expiry or a later one, fails
-// here. Removing the entries is the follow-up that ends the acceptance, and it
-// removes this block with them.
+// The owner's 30-day acceptance of five OpenSSL findings no update can clear:
+// the system libssl and libcrypto packages of the tenant and portal images,
+// granted 2026-11-23, lapsing 2026-12-23. Two further images are in the same
+// acceptance: the drain sidecar, granted 2026-11-24 and lapsing 2026-12-23, and
+// the demo gate, granted 2026-11-24 and lapsing 2026-12-24. The exemption file
+// may hold exactly these forty entries (five advisories, two packages, four
+// images) for those packages, and nothing else for those four images. Widening
+// it by an advisory, a package or an image, or giving an entry no expiry or a
+// later one than its image allows, fails here. Removing the entries is the
+// follow-up that ends the acceptance, and it removes this block with them.
 const OPENSSL_VULNERABILITIES = [
   'CVE-2026-107493',
   'CVE-2026-107494',
@@ -782,18 +778,20 @@ const OPENSSL_VULNERABILITIES = [
   'CVE-2026-84786',
 ];
 const OPENSSL_PACKAGES = ['libcrypto3', 'libssl3'];
-// The demo gate is a third image in the same acceptance, granted a day later
-// (2026-11-24) for its own 30 days. Its extension is pending the owner's
-// confirmation; the 2026-11-23 decision named only the first two images.
+const DRAIN_SIDECAR_IMAGE = 'ghcr.io/branchleft/drain-sidecar';
 const DEMO_GATE_IMAGE = 'ghcr.io/branchleft/demo-gate';
 const OPENSSL_IMAGES = [
   PUBLISHERS['registry-push.yml'],
   PUBLISHERS['portal-apps-image.yml'],
+  DRAIN_SIDECAR_IMAGE,
   DEMO_GATE_IMAGE,
 ];
 const OPENSSL_GRANTED = '2026-11-23';
 const OPENSSL_EXPIRES = '2026-12-23';
-const grantedFor = (image) => (image === DEMO_GATE_IMAGE ? '2026-11-24' : OPENSSL_GRANTED);
+// The drain sidecar and the demo gate were granted the next day; the demo gate
+// lapses a day after the others.
+const grantedFor = (image) =>
+  image === DRAIN_SIDECAR_IMAGE || image === DEMO_GATE_IMAGE ? '2026-11-24' : OPENSSL_GRANTED;
 const expiresFor = (image) => (image === DEMO_GATE_IMAGE ? '2026-12-24' : OPENSSL_EXPIRES);
 
 export function opensslExemptionProblems(source) {
@@ -810,7 +808,7 @@ export function opensslExemptionProblems(source) {
       OPENSSL_PACKAGES.includes(entry.package) &&
       OPENSSL_IMAGES.includes(entry.image);
     if (!inScope) {
-      found.push(`${id} is outside the five advisories, two packages and three images accepted`);
+      found.push(`${id} is outside the five advisories, two packages and four images accepted`);
       continue;
     }
     seen.set(id, (seen.get(id) ?? 0) + 1);
