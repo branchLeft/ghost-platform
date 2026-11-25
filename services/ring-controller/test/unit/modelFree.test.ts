@@ -260,7 +260,8 @@ describe('static: nothing a model, a network or a package could reach', () => {
 
   it('passes the entry its environment as it stands', () => {
     const entry = sources.find(({ name }) => name === 'processEntry.ts')?.text ?? '';
-    expect(entry).toContain('return runRelease(release, deps, config, process.env);');
+    expect(entry).toContain('const env: ModelFreeEnvironment = process.env;');
+    expect(entry).toContain('return runRelease(release, deps, config, env);');
   });
 });
 

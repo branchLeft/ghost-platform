@@ -36,6 +36,12 @@ const PUBLISHERS = {
   'mysqld-exporter-image.yml': 'ghcr.io/branchleft/mysqld-exporter',
   'mailgun-shim-image.yml': 'ghcr.io/branchleft/mailgun-shim',
   'odask-image.yml': 'ghcr.io/branchleft/odask',
+  // A workflow that publishes two images from one push job lists both, in the
+  // order of PAIR_SUFFIXES. Each has its own scan and attest job (see pairProblems).
+  'activitypub-image.yml': [
+    'ghcr.io/branchleft/activitypub',
+    'ghcr.io/branchleft/activitypub-migrate',
+  ],
 };
 
 // Workflows that push but are not covered here, and why. A workflow that pushes
@@ -192,7 +198,14 @@ export function problems(source, { file, image }) {
     found.push('the workflow carries its own copy of the attest or verify step');
   }
 
-  // Every reference to the shared repository is the one pin.
+  found.push(...sharedPinProblems(text));
+  return found;
+}
+
+// Every reference to the shared repository is the one pin. Shared by the
+// single-image and the two-image checkers.
+function sharedPinProblems(text) {
+  const found = [];
   for (const m of text.matchAll(/uses: (branchLeft\/github-workflows\/\S+)(.*)$/gm)) {
     if (`${m[1]}${m[2]}` !== `${m[1]} # v1.2.7` || !m[1].endsWith(`@${PIN}`)) {
       found.push(`github-workflows reference is not pinned to v1.2.7: ${m[0]}`);
@@ -201,9 +214,237 @@ export function problems(source, { file, image }) {
   return found;
 }
 
+// A two-image workflow: one push job publishes both images, and each image has
+// its own scan job and its own attest job, the attest waiting on its own scan.
+// The checks are the single-image ones applied to each suffix, and no job may
+// read the other image's outputs, so an unscanned or misnamed image fails.
+const PAIR_SUFFIXES = ['service', 'migrate'];
+
+export function pairProblems(source, { file, images }) {
+  if (images.length !== PAIR_SUFFIXES.length) return ['a pair names exactly two images'];
+  const found = [];
+  const text = uncommented(source);
+  const jobs = parseJobs(text, false);
+  const { push } = jobs;
+  if (!push) return ['there is no push job'];
+
+  const top = text.split(/^jobs:\n/m)[0];
+  if (/:\s*write(-all)?\s*$|^\s*permissions:\s*write-all/m.test(top)) {
+    found.push('top-level permissions grant a write scope');
+  }
+  if (/id-token|attestations:/.test(push.text)) {
+    found.push('push job holds a signing grant; only attest may');
+  }
+  if (
+    /attest-build-provenance|attestation verify|prove-wrong-identity|\.\/\.github\/actions\//.test(
+      text
+    )
+  ) {
+    found.push('the workflow carries its own copy of the attest or verify step');
+  }
+
+  const wanted = {
+    contents: 'read',
+    packages: 'write',
+    'id-token': 'write',
+    attestations: 'write',
+  };
+  images.forEach((image, i) => {
+    const s = PAIR_SUFFIXES[i];
+    const other = PAIR_SUFFIXES[1 - i];
+    const scan = jobs[`scan-${s}`];
+    const attest = jobs[`attest-${s}`];
+    if (!scan) return found.push(`there is no scan-${s} job`);
+    if (!attest) return found.push(`there is no attest-${s} job`);
+
+    // The push job publishes this image's reference and digest, read back from the store.
+    if (
+      !new RegExp(
+        `^ {6}${s}-image: \\$\\{\\{ steps\\.digest\\.outputs\\.${s}-image \\}\\}$`,
+        'm'
+      ).test(push.text)
+    ) {
+      found.push(`push job does not output the ${s} reference`);
+    }
+    if (
+      !new RegExp(
+        `^ {6}${s}-digest: \\$\\{\\{ steps\\.digest\\.outputs\\.${s}-digest \\}\\}$`,
+        'm'
+      ).test(push.text)
+    ) {
+      found.push(`push job does not output the ${s} digest`);
+    }
+    if (!new RegExp(`echo "${s}-image=\\$[A-Z_]+@\\$${s}_digest"`).test(push.text)) {
+      found.push(`the ${s} reference is not image@digest read back from the image store`);
+    }
+
+    // The scan: waits on push, the shared workflow at the pinned release, this image's
+    // reference only, nothing that softens it.
+    if (JSON.stringify(needsOf(scan.text)) !== JSON.stringify(['push'])) {
+      found.push(`scan-${s} does not wait on push`);
+    }
+    const scanUses = /^ {4}uses: (.+)$/m.exec(scan.text);
+    if (!scanUses || scanUses[1].trim() !== SCAN_USES) {
+      found.push(`scan-${s} does not call image-scan.yml at the pinned v1.2.7`);
+    }
+    const scanWith = withKeys(scan.text);
+    if (scanWith.image !== `\${{ needs.push.outputs.${s}-image }}`) {
+      found.push(`scan-${s} does not scan the pushed ${s} reference`);
+    }
+    if (Object.keys(scanWith).some((k) => k !== 'image')) {
+      found.push(`scan-${s} passes an input other than the image`);
+    }
+    if (
+      JSON.stringify(permissionsOf(scan.text)) !==
+      JSON.stringify({ contents: 'read', packages: 'read' })
+    ) {
+      found.push(`scan-${s} permissions are not exactly contents: read, packages: read`);
+    }
+    for (const [name, job] of [
+      [`scan-${s}`, scan],
+      [`attest-${s}`, attest],
+    ]) {
+      if (/continue-on-error|\|\| true/.test(job.text))
+        found.push(`${name} job swallows a failure`);
+      if (/^ {4}if:/m.test(job.text)) found.push(`${name} job can be skipped by a condition`);
+    }
+
+    // The attest: after its own scan, from the shared action, on this image's digest.
+    const needs = needsOf(attest.text);
+    if (needs.length !== 2 || !needs.includes('push') || !needs.includes(`scan-${s}`)) {
+      found.push(`attest-${s} does not wait on both push and scan-${s}`);
+    }
+    const attestUses = [...attest.text.matchAll(/^\s*uses: (\S.*)$/gm)].map((m) => m[1].trim());
+    if (!attestUses.includes(ATTEST_USES)) {
+      found.push(`attest-${s} does not call attest-and-verify-image at the pinned v1.2.7`);
+    }
+    if (
+      !new RegExp(`^ {10}digest: \\$\\{\\{ needs\\.push\\.outputs\\.${s}-digest \\}\\}$`, 'm').test(
+        attest.text
+      )
+    ) {
+      found.push(`attest-${s} does not attest the pushed ${s} digest`);
+    }
+    if (!attest.text.split('\n').includes(`      IMAGE: ${image}`)) {
+      found.push(`attest-${s} does not name ${image}`);
+    }
+    if (!/^ {10}image: \$\{\{ env\.IMAGE \}\}$/m.test(attest.text)) {
+      found.push(`attest-${s} does not pass the image name`);
+    }
+    const signers = [...attest.text.matchAll(/^\s*signer-workflow: (\S+)\s*$/gm)].map((m) => m[1]);
+    if (signers.length !== 1 || signers[0] !== `${REPO}/.github/workflows/${file}`) {
+      found.push(`attest-${s} signer-workflow is not the literal path of this workflow`);
+    }
+    if (!new RegExp(`^ {10}repo: ${REPO}$`, 'm').test(attest.text)) {
+      found.push(`attest-${s} does not name the repository literally`);
+    }
+    if (JSON.stringify(permissionsOf(attest.text)) !== JSON.stringify(wanted)) {
+      found.push(`attest-${s} permissions are not exactly the four the action needs`);
+    }
+
+    // No cross-wiring: neither job reads the other image's outputs.
+    if (scan.text.includes(`needs.push.outputs.${other}-`)) {
+      found.push(`scan-${s} reads the ${other} image's outputs`);
+    }
+    if (attest.text.includes(`needs.push.outputs.${other}-`)) {
+      found.push(`attest-${s} reads the ${other} image's outputs`);
+    }
+  });
+  found.push(...sharedPinProblems(text));
+  return found;
+}
+
+function pairedTests(file, images) {
+  const real = read(file);
+
+  test(`${file}: pushes two images, scans each before its attest`, () => {
+    assert.deepEqual(pairProblems(real, { file, images }), []);
+  });
+
+  test(`${file}: the checker reports each way either image's scan-before-attest can break`, () => {
+    const cases = [];
+    images.forEach((image, i) => {
+      const s = PAIR_SUFFIXES[i];
+      const other = PAIR_SUFFIXES[1 - i];
+      const scanJob = new RegExp(`\\n {2}scan-${s}:\\n[\\s\\S]*?(?=\\n {2}[a-z][\\w-]*:\\n)`).exec(
+        real
+      );
+      assert.ok(scanJob, `the real text has a scan-${s} job`);
+      const withScan = (from, to) => {
+        assert.ok(scanJob[0].includes(from), `the scan-${s} job contains ${JSON.stringify(from)}`);
+        return real.replace(scanJob[0], scanJob[0].replace(from, to));
+      };
+      cases.push(
+        // The scan for this image is removed, or no longer gates its attest.
+        [real.replace(scanJob[0], ''), `there is no scan-${s} job`],
+        [withScan('    needs: push\n', ''), `scan-${s} does not wait on push`],
+        [
+          swap(real, `    needs: [push, scan-${s}]\n`, '    needs: [push]\n'),
+          `attest-${s} does not wait on both push and scan-${s}`,
+        ],
+        [
+          swap(
+            real,
+            `    needs: [push, scan-${s}]\n`,
+            `    needs: [push, scan-${s}]\n    if: always()\n`
+          ),
+          `attest-${s} job can be skipped by a condition`,
+        ],
+        // The scan runs on the other image, or softens, for this image.
+        [
+          withScan(
+            `image: \${{ needs.push.outputs.${s}-image }}`,
+            `image: \${{ needs.push.outputs.${other}-image }}`
+          ),
+          `scan-${s} does not scan the pushed ${s} reference`,
+        ],
+        [
+          withScan('    with:\n', '    with:\n      allow-empty-sbom: true\n'),
+          `scan-${s} passes an input other than the image`,
+        ],
+        [
+          withScan('    uses: ', '    continue-on-error: true\n    uses: '),
+          `scan-${s} job swallows a failure`,
+        ],
+        // The attest names the other image's digest, or the other image's name.
+        [
+          swap(
+            real,
+            `digest: \${{ needs.push.outputs.${s}-digest }}`,
+            `digest: \${{ needs.push.outputs.${other}-digest }}`
+          ),
+          `attest-${s} does not attest the pushed ${s} digest`,
+        ],
+        [
+          swap(real, `      IMAGE: ${image}\n`, `      IMAGE: ${images[1 - i]}\n`),
+          `attest-${s} does not name ${image}`,
+        ],
+        // The shared attest is floated to a branch rather than the pin.
+        [
+          swap(real, `attest-and-verify-image@${PIN}`, 'attest-and-verify-image@main'),
+          'github-workflows reference is not pinned to v1.2.7',
+        ]
+      );
+    });
+    for (const [text, expected] of cases) {
+      assert.notEqual(text, real, `the sabotage changed the text for: ${expected}`);
+      const found = pairProblems(text, { file, images });
+      assert.ok(
+        found.some((p) => p.includes(expected)),
+        `expected "${expected}", got ${JSON.stringify(found)}`
+      );
+    }
+  });
+}
+
 const hasProblem = (list, expected) => list.some((p) => p.includes(expected));
 
-for (const [file, image] of Object.entries(PUBLISHERS)) {
+for (const [file, value] of Object.entries(PUBLISHERS)) {
+  if (Array.isArray(value)) {
+    pairedTests(file, value);
+    continue;
+  }
+  const image = value;
   const real = read(file);
 
   test(`${file}: pushes, scans the pushed digest, then attests it from the shared action`, () => {
@@ -423,7 +664,7 @@ export function exemptionProblems(source) {
     return ['the exemption file has a key other than exemptions'];
   }
   const found = [];
-  const images = new Set(Object.values(PUBLISHERS));
+  const images = new Set(Object.values(PUBLISHERS).flat());
   for (const entry of data.exemptions) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       found.push('an exemption is not an object');
@@ -519,9 +760,10 @@ test('only the allow-listed workflows pass exemptions-path, each at a file that 
 
 // The owner's 30-day acceptance of five OpenSSL findings no update can clear:
 // the system libssl and libcrypto packages of the tenant and portal images,
-// granted 2026-11-23, lapsing 2026-12-23. The exemption file may hold exactly
-// these twenty entries (five advisories, two packages, two images) for those
-// packages, and nothing else for those two images. Widening it by an advisory,
+// granted 2026-11-23, lapsing 2026-12-23, and of the demo gate image, granted
+// 2026-11-24, lapsing 2026-12-24. The exemption file may hold exactly these
+// thirty entries (five advisories, two packages, three images) for those
+// packages, and nothing else for those three images. Widening it by an advisory,
 // a package or an image, or giving an entry no expiry or a later one, fails
 // here. Removing the entries is the follow-up that ends the acceptance, and it
 // removes this block with them.
@@ -533,9 +775,19 @@ const OPENSSL_VULNERABILITIES = [
   'CVE-2026-84786',
 ];
 const OPENSSL_PACKAGES = ['libcrypto3', 'libssl3'];
-const OPENSSL_IMAGES = [PUBLISHERS['registry-push.yml'], PUBLISHERS['portal-apps-image.yml']];
+// The demo gate is a third image in the same acceptance, granted a day later
+// (2026-11-24) for its own 30 days. Its extension is pending the owner's
+// confirmation; the 2026-11-23 decision named only the first two images.
+const DEMO_GATE_IMAGE = 'ghcr.io/branchleft/demo-gate';
+const OPENSSL_IMAGES = [
+  PUBLISHERS['registry-push.yml'],
+  PUBLISHERS['portal-apps-image.yml'],
+  DEMO_GATE_IMAGE,
+];
 const OPENSSL_GRANTED = '2026-11-23';
 const OPENSSL_EXPIRES = '2026-12-23';
+const grantedFor = (image) => (image === DEMO_GATE_IMAGE ? '2026-11-24' : OPENSSL_GRANTED);
+const expiresFor = (image) => (image === DEMO_GATE_IMAGE ? '2026-12-24' : OPENSSL_EXPIRES);
 
 export function opensslExemptionProblems(source) {
   const data = JSON.parse(source);
@@ -551,13 +803,14 @@ export function opensslExemptionProblems(source) {
       OPENSSL_PACKAGES.includes(entry.package) &&
       OPENSSL_IMAGES.includes(entry.image);
     if (!inScope) {
-      found.push(`${id} is outside the five advisories, two packages and two images accepted`);
+      found.push(`${id} is outside the five advisories, two packages and three images accepted`);
       continue;
     }
     seen.set(id, (seen.get(id) ?? 0) + 1);
-    if (entry.granted !== OPENSSL_GRANTED) found.push(`${id} is not granted on ${OPENSSL_GRANTED}`);
-    if (entry.expires !== OPENSSL_EXPIRES)
-      found.push(`${id} does not expire on ${OPENSSL_EXPIRES}`);
+    if (entry.granted !== grantedFor(entry.image))
+      found.push(`${id} is not granted on ${grantedFor(entry.image)}`);
+    if (entry.expires !== expiresFor(entry.image))
+      found.push(`${id} does not expire on ${expiresFor(entry.image)}`);
     if (typeof entry['approved-by'] !== 'string' || entry['approved-by'].trim() === '') {
       found.push(`${id} names no approved-by`);
     }
@@ -590,7 +843,19 @@ test('the OpenSSL exemption check fails when the scope is widened or the expiry 
     );
     return JSON.stringify(copy);
   };
+  // The demo-gate entries carry their own dates: a demo-gate entry given the
+  // tenant and portal dates (granted 2026-11-23, expiring 2026-12-23) must fail.
+  const mutateDemoGate = (change) => {
+    const copy = structuredClone(real);
+    change(
+      copy.exemptions,
+      copy.exemptions.findIndex((e) => e.image === DEMO_GATE_IMAGE)
+    );
+    return JSON.stringify(copy);
+  };
   const cases = [
+    [mutateDemoGate((all, i) => (all[i].expires = '2026-12-23')), 'does not expire on 2026-12-24'],
+    [mutateDemoGate((all, i) => (all[i].granted = '2026-11-23')), 'is not granted on 2026-11-24'],
     [
       mutate((all) => all.push({ ...sample, vulnerability: 'CVE-2026-107496' })),
       'outside the five',

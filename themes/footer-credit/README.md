@@ -17,7 +17,7 @@ Every bundled theme prints the platform's default footer credit beside Ghost's o
 
 The Dockerfile's themes step runs `apply.sh` on `/var/lib/ghost/content.orig/themes` after `verify.mjs` has checked every pin, so the patches apply to the pinned bytes. Casper and Source are symlinks there into the base image's themes, so they are patched in place. `patch` is installed and removed in the same layer, as for the Ghost-core overlays.
 
-The base image's entrypoint copies a theme into a site's content directory only when that theme is not already there. A site whose content volume already holds a theme keeps its old copy and does not show the credit until that theme directory is replaced.
+The base image's entrypoint copies a theme into a site's content directory only when that theme is not already there. A site whose content volume already holds an older copy would keep it, so the platform's wrapper entrypoint (`docker-entrypoint.branchleft.sh`, `refresh_bundled_themes`) replaces any bundled theme copy that lacks `partials/platform-footer-credit.hbs` before Ghost starts. It runs on every container start, so a site picks up the credit on its next deploy with no per-tenant step. The replaced copy is moved to `theme-backup-pre-footer-credit/` in the content directory, not deleted.
 
 ## Adding or bumping a theme
 
