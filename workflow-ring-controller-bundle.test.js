@@ -29,11 +29,12 @@ test('holds the signing grants and contents: write, on its one job only', () => 
   );
 });
 
-test('attests with the reviewed action, pinned to its commit, before the release', () => {
+test('attests through the shared npm-tarball action, pinned to its release, before the release', () => {
   assert.match(
     text,
-    /uses: actions\/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4\.2\.2/
+    /uses: branchLeft\/github-workflows\/\.github\/actions\/attest-npm-tarball@f559ca696956d3d58440f56666d85f36c829c08b # v1\.2\.7/
   );
+  assert.doesNotMatch(text, /actions\/attest-build-provenance@/);
   assert.ok(
     text.indexOf('- name: Attest the bundle') < text.indexOf('- name: Publish the release')
   );

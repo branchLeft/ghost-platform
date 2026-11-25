@@ -5,7 +5,7 @@ import {
   INIT,
   MEMBERSHIPS,
   NAMED_INDEXES,
-  POLICIES,
+  policiesAt,
   ROLE_ATTRIBUTES,
   ROW_SECURITY,
   SETTINGS,
@@ -735,8 +735,8 @@ async function mentions(
     }
   }
   if (inDatabase) {
-    for (const policy of POLICIES) {
-      if (checkpoint.applied.includes(policy.since) && checkpoint.present.has(policy.role)) {
+    for (const policy of policiesAt(checkpoint.applied)) {
+      if (checkpoint.present.has(policy.role)) {
         expected.push(
           `r policy ${policy.name} on ${policy.table} -> ${checkpoint.names[policy.role]}`
         );
@@ -982,7 +982,7 @@ async function policies(client: ClientBase, checkpoint: Checkpoint): Promise<Obs
       WHERE p.polrelid = ANY(ARRAY(SELECT to_regclass(r) FROM unnest($1::text[]) r))`,
     [manifestRelations(checkpoint)]
   );
-  const expected = POLICIES.filter((p) => checkpoint.applied.includes(p.since)).map((p) => p.text);
+  const expected = policiesAt(checkpoint.applied).map((p) => p.text);
   return { mechanism: 'M20', actual: found.map((r) => r.text), expected };
 }
 
@@ -1113,7 +1113,7 @@ function derivedParams(checkpoint: Checkpoint): [string[], string[], string[], s
     relationList(checkpoint),
     expected.filter((o) => o.kind === 'function').map((o) => o.identity),
     expected.filter((o) => o.kind === 'schema').map((o) => o.identity),
-    POLICIES.filter((p) => checkpoint.applied.includes(p.since)).map((p) => `${p.table}:${p.name}`),
+    policiesAt(checkpoint.applied).map((p) => `${p.table}:${p.name}`),
     NAMED_INDEXES.filter((i) => checkpoint.applied.includes(i.since)).map((i) => i.identity),
   ];
 }

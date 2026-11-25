@@ -79,6 +79,7 @@ jobs:
           pnpm run build
           VERSION="$(node -p 'require("./package.json").version')"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "ref=refs/tags/ring-controller-v${VERSION}" >> "${GITHUB_OUTPUT}"
           for run in a b; do
             python3 release/pack_bundle.py \
               --dist dist \
@@ -92,20 +93,27 @@ jobs:
           cp "${RUNNER_TEMP}/bundle-a/${name}" "${RUNNER_TEMP}/bundle-a/${name}.sha256" "${RUNNER_TEMP}/release/"
 
       - name: Attest the bundle
-        id: attest
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
         with:
-          subject-path: ${{ runner.temp }}/release/ring-controller-bundle-${{ steps.pack.outputs.version }}.tar.gz
+          tarball: ${{ runner.temp }}/release/ring-controller-bundle-${{ steps.pack.outputs.version }}.tar.gz
+          repo: branchLeft/ghost-platform
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/ring-controller-bundle.yml
+          ref: ${{ steps.pack.outputs.ref }}
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.pack.outputs.version }}
-          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         run: |
           set -euo pipefail
           name="ring-controller-bundle-${VERSION}.tar.gz"
-          cp "${ATTESTATION_BUNDLE}" "${RUNNER_TEMP}/release/${name}.sigstore.json"
+          # The shared attest action exposes no bundle path, so the bundle is read back from
+          # the attestation API into its own directory, and must come back as exactly one file.
+          mkdir -p "${RUNNER_TEMP}/attestation"
+          (cd "${RUNNER_TEMP}/attestation" && gh attestation download "${RUNNER_TEMP}/release/${name}" --repo "${GITHUB_REPOSITORY}")
+          bundles=("${RUNNER_TEMP}/attestation"/sha256-*.jsonl)
+          test "${#bundles[@]}" -eq 1
+          cp "${bundles[0]}" "${RUNNER_TEMP}/release/${name}.sigstore.json"
           # `gh release create` fails if the release exists, so a published bundle is
           # never replaced. `--verify-tag` fails if the tag is not on the remote, and
           # `--latest=false` keeps this off the repository's latest release.

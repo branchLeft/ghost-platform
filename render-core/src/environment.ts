@@ -155,6 +155,17 @@ function required(name: keyof typeof SECRET_ENV_KEYS, secretsFilePath: string): 
   return `\${${SECRET_ENV_KEYS[name]}:?set ${SECRET_ENV_KEYS[name]} in ${secretsFilePath}}`;
 }
 
+/** `required()` for a key that is not one of `SECRET_ENV_KEYS`: a descriptor's own `mail.bulk.credentialRef`. */
+function requiredKey(key: string, secretsFilePath: string): string {
+  return `\${${key}:?set ${key} in ${secretsFilePath}}`;
+}
+
+/** The secrets-file key a descriptor's bulk-mail credential is read from: its
+ * own `mail.bulk.credentialRef`, or the spool's key when it names no endpoint. */
+export function bulkCredentialKeyOf(mail: Pick<MailSpec, 'bulk'>): string {
+  return mail.bulk?.credentialRef ?? SECRET_ENV_KEYS.bulkEmailApiKey;
+}
+
 // Compose's own `${VAR}`/`$VAR` interpolation — see the module doc comment.
 // `$$` is Compose's escape for a literal `$`.
 function escapeComposeDollar(value: string): string {
@@ -445,8 +456,10 @@ function bulkMailEnvironment(
     mail__from: renderSendingAddress(mail.identity, zones),
   };
   if (mail.enabled) {
-    env.bulkEmail__mailgun__baseUrl = MAIL_SPOOL_BASE_URL;
-    env.bulkEmail__mailgun__domain = credentialDomainOf(mail.identity, zones, uid);
+    // A descriptor that names no bulk endpoint keeps the host's own spool.
+    env.bulkEmail__mailgun__baseUrl = mail.bulk?.endpoint ?? MAIL_SPOOL_BASE_URL;
+    env.bulkEmail__mailgun__domain =
+      mail.bulk?.domain ?? credentialDomainOf(mail.identity, zones, uid);
   }
   return env;
 }
@@ -587,6 +600,22 @@ function analyticsEnvironment(
   };
 }
 
+/** True only for an explicit `on`; an absent activitypub field is off. */
+export function federationOn(descriptor: Pick<TenantDescriptor, 'activitypub'>): boolean {
+  return descriptor.activitypub?.kind === 'on';
+}
+
+/**
+ * The federation keys, owned here so every reconciler renders them the same
+ * way. Off locks Ghost's ActivityPub setting (the key is absent when on, so
+ * Ghost keeps its own default). See environment.md#social-web-lock.
+ */
+export function federationEnvironment(
+  descriptor: Pick<TenantDescriptor, 'activitypub'>
+): Record<string, boolean> {
+  return federationOn(descriptor) ? {} : { hostSettings__limits__limitSocialWeb__disabled: true };
+}
+
 /**
  * The `environment:` block of the rendered Compose service, for every kind.
  * `secretsFilePath` only appears inside a `${…:?}` reference's own failure
@@ -596,6 +625,7 @@ export function tenantEnvironment(
   descriptor: Pick<
     TenantDescriptor,
     | 'analytics'
+    | 'activitypub'
     | 'slug'
     | 'uid'
     | 'kind'
@@ -627,13 +657,10 @@ export function tenantEnvironment(
 
     security__allowWebhookInternalIPs: false,
 
-    // Locks the ActivityPub setting off for every tenant: the admin's Network
-    // tab is that feature's surface and nothing serves the paths it calls, so
-    // it would only ever show an error. Ghost reads this flag from config
-    // only, and unlike a cap it is unconditional, so it is not part of
-    // `hostLimitsEnvironment`. `settings.ts` sets `social_web` off as well,
-    // because the lock does not remove what an existing tenant already has.
-    hostSettings__limits__limitSocialWeb__disabled: true,
+    // The ActivityPub lock: on for every tenant unless the descriptor says
+    // `on` (federationEnvironment). Ghost reads it from config only, so it is
+    // not part of `hostLimitsEnvironment`.
+    ...federationEnvironment(descriptor),
     ...hostStripeEnvironment(descriptor.kind),
 
     theme__uploadLimits__compressedBytes: limits.themeCompressedBytes,
@@ -687,7 +714,10 @@ export function tenantEnvironment(
     escaped.mail__options__auth__pass = required('bulkEmailApiKey', secretsFilePath);
   }
   if (descriptor.mail.enabled) {
-    escaped.bulkEmail__mailgun__apiKey = required('bulkEmailApiKey', secretsFilePath);
+    escaped.bulkEmail__mailgun__apiKey = requiredKey(
+      bulkCredentialKeyOf(descriptor.mail),
+      secretsFilePath
+    );
   }
 
   return escaped;

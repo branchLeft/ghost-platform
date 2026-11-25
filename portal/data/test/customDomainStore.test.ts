@@ -22,6 +22,7 @@ import {
   TENANT_A,
   TENANT_B,
   createFixture,
+  newAccount,
   rejection,
   rootMessage,
   type Fixture,
@@ -42,9 +43,12 @@ const scopeC = bindTenant(TENANT_C);
 
 beforeAll(async () => {
   fixture = await createFixture();
-  await fixture.adminDb
-    .insert(schema.tenantRegister)
-    .values({ tenantId: TENANT_C, zitadelOrgId: 'org-c', kind: 'REAL' });
+  await fixture.adminDb.insert(schema.tenantRegister).values({
+    tenantId: TENANT_C,
+    zitadelOrgId: 'org-c',
+    kind: 'REAL',
+    accountId: await newAccount(fixture.adminDb, 'org-c'),
+  });
   tenant = new TenantDb(fixture.tenant);
 });
 
