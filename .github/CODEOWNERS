@@ -108,6 +108,7 @@
 # Promotion and upgrade gates: their output feeds the signed promotion attestation.
 /services/release-classifier/src/                @branchLeft/branchleft-admin
 /services/ring-controller/src/                   @branchLeft/branchleft-admin
+/services/ring-controller/release/                @branchLeft/branchleft-admin
 /themes/verify.mjs                               @branchLeft/branchleft-admin
 /services/ring-controller/src/README.md
 
