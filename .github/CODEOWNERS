@@ -1,15 +1,18 @@
 # Code owners. The owner is a required reviewer ONLY for:
 #   (a) GUARDRAILS: a file that, if silently weakened, would stop an agent guardrail
 #       or a required check protecting us: CODEOWNERS and its proof test, the gate
-#       scripts that required checks and deploy gates run, the workflows
-#       and actions themselves, ruleset files, CLAUDE.md, AUTHORISATIONS.md, .claude/,
-#       floors and thresholds, approval and apply allowlists, integrity pins and scan
+#       scripts and tests that required checks and deploy gates run, the workflows
+#       that enforce a required check or gate a deploy (and the local actions they
+#       call), ruleset files, CLAUDE.md, AUTHORISATIONS.md, .claude/, floors and
+#       thresholds, approval and apply allowlists, integrity pins and scan
 #       exemptions, and the standards escape-hatch files.
 #   (b) HUMAN-FACING DOCS: text written for other people: README, LICENSE, legal
 #       text, product copy.
 # EVERYTHING ELSE lands on an agent review plus green CI: app code, auth, control-plane
 # and broker code, security policy, edge and Caddy, Dockerfiles, dependencies, tests,
-# engineering docs, runbooks, hosts and Pulumi. Do not own a path because it is
+# engineering docs, runbooks, hosts and Pulumi, and every workflow that neither
+# enforces a required check, gates a deploy, holds a secret nor grants a write
+# permission, with the Dependabot settings. Do not own a path because it is
 # sensitive; ask whether weakening it would disable a guard. Owner ruling.
 #
 # GitHub applies the LAST matching line. There is deliberately no catch-all line: a
@@ -64,6 +67,45 @@
 /scripts/smoke-test.sh                           @branchLeft/branchleft-admin
 /scripts/test-storage-guard.sh                   @branchLeft/branchleft-admin
 
+# Workflows that enforce a required check (docker build, Tenant type check, Format
+# and lint, Digest-only line scope) and the local actions they call. standards.yml
+# and docs-lint.yml come from the shared lines at the end.
+/.github/workflows/build.yml                     @branchLeft/branchleft-admin
+/.github/workflows/infra-tenant-ci.yml           @branchLeft/branchleft-admin
+/.github/workflows/repo-tooling-ci.yml           @branchLeft/branchleft-admin
+/.github/workflows/digest-line-scope.yml         @branchLeft/branchleft-admin
+/.github/actions/                                @branchLeft/branchleft-admin
+
+# Workflows that gate a deploy: the environment-gated applies, provisioning and
+# test charge, the promotion signer, and every workflow that signs the image,
+# package or release a host verifies before it pulls it (a scan or attest step
+# there is the gate). Every other workflow is released.
+/.github/workflows/infra-hosts-ci.yml            @branchLeft/branchleft-admin
+/.github/workflows/infra-demo-host-ci.yml        @branchLeft/branchleft-admin
+/.github/workflows/provision-tenant.yml          @branchLeft/branchleft-admin
+/.github/workflows/mollie-test-charge.yml        @branchLeft/branchleft-admin
+/.github/workflows/promote-candidate.yml         @branchLeft/branchleft-admin
+/.github/workflows/registry-push.yml             @branchLeft/branchleft-admin
+/.github/workflows/broker-release.yml            @branchLeft/branchleft-admin
+/.github/workflows/speckify.yml                  @branchLeft/branchleft-admin
+/.github/workflows/publish-*.yml                 @branchLeft/branchleft-admin
+/.github/workflows/*-image.yml                   @branchLeft/branchleft-admin
+/.github/workflows/ring-controller-bundle.yml    @branchLeft/branchleft-admin
+
+# Workflows that hold a secret other than GITHUB_TOKEN or grant a write permission
+# (code scanning, the lockfile commit, the image mirror, the two watchers), with
+# what the credentialed mirror reads and runs. The test reads every workflow and
+# fails when a file that matches this rule is not owned.
+/.github/workflows/codeql.yml                    @branchLeft/branchleft-admin
+/.github/workflows/generate-lockfile.yml         @branchLeft/branchleft-admin
+/.github/workflows/image-mirror.yml              @branchLeft/branchleft-admin
+/.github/workflows/major-watcher-run.yml         @branchLeft/branchleft-admin
+/.github/workflows/release-watcher-run.yml       @branchLeft/branchleft-admin
+/.github/image-mirror/                           @branchLeft/branchleft-admin
+/scripts/mirror-images.py                        @branchLeft/branchleft-admin
+/scripts/probe_private_packages.py               @branchLeft/branchleft-admin
+/scripts/test_probe_private_packages.py          @branchLeft/branchleft-admin
+
 # Promotion and upgrade gates: their output feeds the signed promotion attestation.
 /services/release-classifier/src/                @branchLeft/branchleft-admin
 /services/ring-controller/src/                   @branchLeft/branchleft-admin
@@ -98,7 +140,7 @@
 /infra/tenant/LICENSE                            @branchLeft/branchleft-admin
 /portal/apps/src/tenant/explainerPages.ts        @branchLeft/branchleft-admin
 
-# branchLeft/standards templates/codeowners, synced whole (SYNC-1: these five
+# branchLeft/standards templates/codeowners, synced whole (SYNC-1: these seven
 # lines must be this file's final lines, in this order — GitHub applies the
 # LAST matching CODEOWNERS pattern regardless of specificity, so anything
 # after or between them would silently take ownership of an escape hatch).
@@ -106,4 +148,6 @@
 /.standards.mode         @branchLeft/branchleft-admin
 /.docs-lint*             @branchLeft/branchleft-admin
 /.standards-db-tooling   @branchLeft/branchleft-admin
-/.github/                @branchLeft/branchleft-admin
+/.github/CODEOWNERS      @branchLeft/branchleft-admin
+/.github/workflows/standards.yml  @branchLeft/branchleft-admin
+/.github/workflows/docs-lint.yml  @branchLeft/branchleft-admin
