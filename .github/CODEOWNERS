@@ -90,6 +90,7 @@
 /.github/workflows/speckify.yml                  @branchLeft/branchleft-admin
 /.github/workflows/publish-*.yml                 @branchLeft/branchleft-admin
 /.github/workflows/*-image.yml                   @branchLeft/branchleft-admin
+/.github/workflows/ring-controller-bundle.yml    @branchLeft/branchleft-admin
 
 # Workflows that hold a secret other than GITHUB_TOKEN or grant a write permission
 # (code scanning, the lockfile commit, the image mirror, the two watchers), with
@@ -139,7 +140,7 @@
 /infra/tenant/LICENSE                            @branchLeft/branchleft-admin
 /portal/apps/src/tenant/explainerPages.ts        @branchLeft/branchleft-admin
 
-# branchLeft/standards templates/codeowners, synced whole (SYNC-1: these five
+# branchLeft/standards templates/codeowners, synced whole (SYNC-1: these seven
 # lines must be this file's final lines, in this order — GitHub applies the
 # LAST matching CODEOWNERS pattern regardless of specificity, so anything
 # after or between them would silently take ownership of an escape hatch).
@@ -147,4 +148,6 @@
 /.standards.mode         @branchLeft/branchleft-admin
 /.docs-lint*             @branchLeft/branchleft-admin
 /.standards-db-tooling   @branchLeft/branchleft-admin
-/.github/                @branchLeft/branchleft-admin
+/.github/CODEOWNERS      @branchLeft/branchleft-admin
+/.github/workflows/standards.yml  @branchLeft/branchleft-admin
+/.github/workflows/docs-lint.yml  @branchLeft/branchleft-admin
