@@ -1,6 +1,6 @@
 # HELP ghost_platform_tenant_image_info The newest tenant image digest that passed the scan and was attested.
 # TYPE ghost_platform_tenant_image_info gauge
-ghost_platform_tenant_image_info{digest="sha256:f52bd3350ee60a7dfe0512b40a926ae331105a0f1643179be3672e3074c7cf40"} 1
+ghost_platform_tenant_image_info{digest="sha256:f8a41c2195a10ac188979e0689abbebc1c599722a4ef482e66e80ef7848128f0"} 1
 # HELP ghost_platform_tenant_image_last_success_timestamp_seconds Unix time of the run that recorded it.
 # TYPE ghost_platform_tenant_image_last_success_timestamp_seconds gauge
-ghost_platform_tenant_image_last_success_timestamp_seconds 1795692251
+ghost_platform_tenant_image_last_success_timestamp_seconds 1795695969
