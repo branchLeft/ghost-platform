@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { readdirSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -82,5 +83,15 @@ describe('fileBodyStream (a file as a streamed request body)', () => {
     await expect(stream.cancel()).resolves.toBeUndefined();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(uncaught).toEqual([]);
+  });
+
+  it('a cancel that arrives while the file is still opening does not leak the handle', async () => {
+    const path = join(dir, 'd.tar');
+    await writeFile(path, randomBytes(1000));
+    const openFds = (): number => readdirSync('/dev/fd').length;
+    const before = openFds();
+    for (let i = 0; i < 50; i++) await fileBodyStream(path).cancel(new Error('gone at once'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(openFds()).toBeLessThanOrEqual(before + 2);
   });
 });

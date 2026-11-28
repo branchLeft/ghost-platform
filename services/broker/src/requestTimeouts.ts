@@ -9,6 +9,23 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
  */
 export const IMAGE_PUSH_IDLE_TIMEOUT_MS = 60_000;
 
+/**
+ * The most an image push may take to arrive in all, however steadily it moves.
+ * An upper bound for a signed sender, so one stuck or hostile one cannot hold
+ * the host's single push slot for ever; generous because the idle clock, not
+ * this, is what judges a healthy push.
+ */
+export const IMAGE_PUSH_MAX_TOTAL_MS = 60 * 60 * 1000;
+
+/**
+ * How long a connection may go on being read after the broker has already
+ * answered an image push whose body had not finished arriving (a refusal: a
+ * bad header, a bad signature, too big). Long enough for the sender to read
+ * the answer, short enough that nothing unsigned can hold a connection by
+ * dripping into a body nobody wants.
+ */
+export const REFUSED_PUSH_LINGER_MS = 5_000;
+
 export interface RequestTimeouts {
   /** Every request must send its headers within this long (Node's own `headersTimeout`). */
   readonly headersTimeoutMs: number;
@@ -16,6 +33,10 @@ export interface RequestTimeouts {
   readonly requestTimeoutMs: number;
   /** The image push may be silent this long; see `IMAGE_PUSH_IDLE_TIMEOUT_MS`. */
   readonly imagePushIdleTimeoutMs?: number;
+  /** The image push must be received whole within this long; see `IMAGE_PUSH_MAX_TOTAL_MS`. */
+  readonly imagePushMaxTotalMs?: number;
+  /** See `REFUSED_PUSH_LINGER_MS`. */
+  readonly refusedPushLingerMs?: number;
 }
 
 export function isImagePushRequest(req: Pick<IncomingMessage, 'method' | 'url'>): boolean {
@@ -44,6 +65,8 @@ export function applyRequestTimeouts(server: Server, timeouts: RequestTimeouts):
   server.headersTimeout = timeouts.headersTimeoutMs;
   server.requestTimeout = 0;
   const pushIdleMs = timeouts.imagePushIdleTimeoutMs ?? IMAGE_PUSH_IDLE_TIMEOUT_MS;
+  const pushMaxTotalMs = timeouts.imagePushMaxTotalMs ?? IMAGE_PUSH_MAX_TOTAL_MS;
+  const pushLingerMs = timeouts.refusedPushLingerMs ?? REFUSED_PUSH_LINGER_MS;
 
   server.prependListener('request', (req: IncomingMessage, res: ServerResponse) => {
     if (req.complete) return; // nothing left to receive: no clock needed
@@ -54,14 +77,30 @@ export function applyRequestTimeouts(server: Server, timeouts: RequestTimeouts):
       // `req.setTimeout`, not the socket's own: with a listener on the request
       // Node leaves the connection to us; without one it destroys it silently.
       req.setTimeout(pushIdleMs, onIdle);
+      const totalTimer = setTimeout(onIdle, pushMaxTotalMs);
+      totalTimer.unref();
+      let lingerTimer: ReturnType<typeof setTimeout> | undefined;
+      // Cleared when the request is over (its body is in, or its connection is
+      // gone), and NOT when the response is written: a refusal answers while
+      // the body is still arriving, and the clocks must outlive that answer.
       // Once the body is in, the broker's own hashing and loading is silent
       // for as long as it takes; that is not the sender's stall.
       const done = (): void => {
+        clearTimeout(totalTimer);
+        clearTimeout(lingerTimer);
         req.off('timeout', onIdle);
-        socket.setTimeout(0);
+        if (!socket.destroyed) socket.setTimeout(0);
       };
       req.once('end', done);
-      res.once('close', done);
+      req.once('close', done);
+      // An answer sent before the body is in is a refusal. The idle clock
+      // alone would let a sender drip into it for ever, so it gets a short,
+      // hard limit to read the answer and go.
+      res.once('finish', () => {
+        if (req.complete) return;
+        lingerTimer = setTimeout(() => socket.destroy(), pushLingerMs);
+        lingerTimer.unref();
+      });
       return;
     }
 

@@ -24,6 +24,7 @@ export function fileBodyStream(path: string): ReadableStream<Uint8Array> {
   let handle: FileHandle | undefined;
   let cancelled = false;
   let inFlight: Promise<unknown> = Promise.resolve();
+  let opening: Promise<unknown> = Promise.resolve();
 
   const closeHandle = async (): Promise<void> => {
     const h = handle;
@@ -33,8 +34,14 @@ export function fileBodyStream(path: string): ReadableStream<Uint8Array> {
 
   return new ReadableStream<Uint8Array>(
     {
-      async start() {
-        handle = await open(path, 'r');
+      start() {
+        // A cancel can arrive before the open finishes (start is not awaited
+        // by cancel): whoever finishes second closes the handle.
+        opening = open(path, 'r').then(async (opened) => {
+          handle = opened;
+          if (cancelled) await closeHandle();
+        });
+        return opening;
       },
       pull(controller) {
         const h = handle;
@@ -60,6 +67,7 @@ export function fileBodyStream(path: string): ReadableStream<Uint8Array> {
       },
       async cancel() {
         cancelled = true;
+        await opening.catch(() => undefined);
         await inFlight;
         await closeHandle();
       },
