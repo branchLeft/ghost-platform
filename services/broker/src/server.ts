@@ -15,6 +15,7 @@ import type { ImageLoader } from './imagePush.js';
 import { createFileRealTrafficChecker, createZeroRealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { UNWIRED_RECYCLE_EFFECTS } from './recycle.js';
+import { applyRequestTimeouts } from './requestTimeouts.js';
 import { createSlotLock } from './slotLock.js';
 import { seamReadiness } from './seamReadiness.js';
 import { recoverCrashedSlots } from './stateStore.js';
@@ -216,8 +217,10 @@ export async function main(): Promise<Server> {
 
   const handler = createBrokerHandler(deps);
   const server = createServer((req, res) => void handler(req, res));
-  server.headersTimeout = 10_000;
-  server.requestTimeout = Math.max(60_000, config.drainPollTimeoutMs + 10_000);
+  applyRequestTimeouts(server, {
+    headersTimeoutMs: 10_000,
+    requestTimeoutMs: Math.max(60_000, config.drainPollTimeoutMs + 10_000),
+  });
   server.listen(config.port, config.host, () => {
     console.log(`broker listening on ${config.host}:${config.port}`);
   });
