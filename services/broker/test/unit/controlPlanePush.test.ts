@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
@@ -163,6 +163,68 @@ describe('pushImage (the control-plane side of push delivery)', () => {
         `image push did not finish within ${String(TIMEOUT_MS)} ms`
       );
     });
+  });
+
+  describe('when the receiver goes away while the tar is still being sent', () => {
+    let receiver: Server | undefined;
+    const sockets = new Set<Socket>();
+    const uncaught: Error[] = [];
+    const onUncaught = (error: Error): void => {
+      uncaught.push(error);
+    };
+
+    afterEach(async () => {
+      process.off('uncaughtException', onUncaught);
+      for (const socket of sockets) socket.destroy();
+      sockets.clear();
+      const server = receiver;
+      receiver = undefined;
+      if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it.each(['reset', 'answer 413 and close'])(
+      'on a %s mid-upload of a multi-chunk file, the push is a rejection or a status, never an uncaught error',
+      async (how) => {
+        uncaught.length = 0;
+        process.on('uncaughtException', onUncaught);
+        receiver = createServer((req, res) => {
+          let seen = 0;
+          req.on('error', () => undefined);
+          req.on('data', (chunk: Buffer) => {
+            seen += chunk.length;
+            if (seen < 1_000_000) return;
+            if (how === 'reset') {
+              req.socket.resetAndDestroy();
+            } else if (!res.headersSent) {
+              res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
+              res.end('{"error":"too big"}');
+            }
+          });
+        });
+        receiver.on('connection', (socket) => {
+          sockets.add(socket);
+          socket.on('close', () => sockets.delete(socket));
+        });
+        await new Promise<void>((resolve) => receiver?.listen(0, '127.0.0.1', resolve));
+        const dir = await makeTempDir('control-plane-push-');
+        const tarPath = join(dir, 'image.tar');
+        await writeFile(tarPath, randomBytes(24 * 1024 * 1024));
+
+        const outcome = await pushImage({
+          baseUrl: `http://127.0.0.1:${String((receiver.address() as AddressInfo).port)}`,
+          digest: `sha256:${'0'.repeat(64)}`,
+          tarPath,
+          privateKeyRaw: Buffer.alloc(32, 7),
+        }).then(
+          (result) => result.status,
+          (error: unknown) => (error instanceof Error ? error.message : 'rejected')
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        if (typeof outcome === 'number') expect(outcome).toBe(413);
+        expect(uncaught.map((e) => e.message)).toEqual([]);
+      }
+    );
   });
 
   describe('when a 2xx answer arrives but its body cannot be read', () => {

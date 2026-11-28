@@ -7,13 +7,12 @@
  * `docker save <content digest>`, never by fetching it from anywhere),
  * because delivering it is this module's whole job, not producing it.
  */
-import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
-import { Readable } from 'node:stream';
 // The generated client can neither stream nor sign: see app.md#generated-server.
 import { pushImage as generatedPushImage } from './generated/index.js';
 
+import { fileBodyStream } from './fileBodyStream.js';
 import { imagePushManifest } from './imagePush.js';
 import { signRequest } from './signing.js';
 
@@ -70,9 +69,9 @@ export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
   // generated client types the body as a string (and never serialises it:
   // the operation declares an octet-stream), so the stream goes in through
   // a cast, to the one place the type is wrong about what fetch accepts.
-  const body = Readable.toWeb(
-    createReadStream(args.tarPath)
-  ) as unknown as globalThis.ReadableStream<Uint8Array>;
+  // Built by hand, not with `Readable.toWeb`: see `fileBodyStream` for the
+  // uncatchable crash that adapter gives when fetch cancels the body early.
+  const body = fileBodyStream(args.tarPath);
 
   const timeoutMs = args.timeoutMs ?? DEFAULT_PUSH_TIMEOUT_MS;
   const result = await generatedPushImage({

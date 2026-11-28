@@ -3,6 +3,19 @@
 All notable changes to the broker release bundle (`broker-vX.Y.Z`, built from
 `services/broker`) are recorded here.
 
+## 0.2.1
+
+**A slow image push is no longer answered 408, and a push can no longer crash the control-plane CLI.**
+
+- **Fix (broker):** the server no longer uses Node's whole-request
+  `requestTimeout` (at most 130 s), which answered 408 to a docker-save tar that
+  was still arriving over a slow tunnel. `POST /image` is now cut off only after
+  60 s without a byte; every other route keeps the whole-request limit, and
+  `headersTimeout` is unchanged.
+- **Fix (control-plane push CLI, not in the bundle):** the upload body is read
+  from the file directly instead of through `Readable.toWeb`, which threw an
+  uncaught `Controller is already closed` when fetch cancelled the body early.
+
 ## 0.2.0
 
 **The broker can freeze a slot's evidence and push images to a host.**
